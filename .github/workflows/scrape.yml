@@ -2,46 +2,78 @@ name: Scrape availability
 
 on:
   schedule:
-    # 毎日 22:00 JST (= 13:00 UTC) に実行。時間帯ドリルは重いため1日1回。
+    # 1日2回 JST 10:00 / 22:00（= UTC 01:00 / 13:00）
+    - cron: "0 1 * * *"
     - cron: "0 13 * * *"
   workflow_dispatch:
     inputs:
-      days:
-        description: "取得日数（今日から何日先まで）"
-        default: "30"
+      months:
+        description: "取得範囲（今日からNヶ月先の末日まで）"
+        default: "2"
 
 permissions:
   contents: write # data/*.json をコミットするため
   pages: write
   id-token: write
 
+env:
+  # 並列分割数。matrix の shard 個数と必ず一致させること。
+  SHARD_COUNT: "5"
+
 jobs:
+  # 施設を5分割し、5ジョブ並列で取得（各ジョブが part ファイルを生成）
   scrape:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
         working-directory: scraper
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
-
-      - name: Run scraper
+      - name: Run scraper (shard ${{ matrix.shard }})
         env:
-          SCRAPE_DAYS_AHEAD: ${{ github.event.inputs.days || '30' }}
-          FACILITIES_SHEET_CSV_URL: ${{ secrets.FACILITIES_SHEET_CSV_URL }}
-        run: python scraper/main.py --days "$SCRAPE_DAYS_AHEAD"
+          MONTHS: ${{ github.event.inputs.months || '2' }}
+        run: python scraper/main.py --months "$MONTHS" --shard-index ${{ matrix.shard }} --shard-count ${{ env.SHARD_COUNT }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avail-part-${{ matrix.shard }}
+          path: web/public/data/availability.part${{ matrix.shard }}.json
+          retention-days: 1
 
+  # 全 shard の結果を結合し、コミット
+  combine:
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies (no browser needed)
+        run: pip install -r scraper/requirements.txt
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: avail-part-*
+          merge-multiple: true
+          path: web/public/data
+      - name: Combine into availability.json
+        env:
+          FACILITIES_SHEET_CSV_URL: ${{ secrets.FACILITIES_SHEET_CSV_URL }}
+        run: python scraper/main.py --combine --shard-count "$SHARD_COUNT"
       - name: Commit updated data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add web/public/data/*.json
+          git add web/public/data/availability.json web/public/data/facilities.json
           if git diff --staged --quiet; then
             echo "変更なし"
           else
@@ -49,7 +81,7 @@ jobs:
             git push
           fi
 
-  # スクレイプ後にサイトを再ビルド・公開
+  # サイトを再ビルド・公開
   deploy:
-    needs: scrape
+    needs: combine
     uses: ./.github/workflows/deploy.yml

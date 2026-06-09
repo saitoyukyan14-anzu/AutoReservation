@@ -1,7 +1,8 @@
 # けやき空き — 東京都の施設空き状況ビューア
 
-けやきネット（世田谷区公共施設予約システム）の **集会施設**（区民センター・地区会館・区民集会所）の
-空き状況を定期取得し、**日時・広さで横断検索**できる静的サイトです。
+けやきネット（世田谷区公共施設予約システム）で **用途「その他ダンス（音量大/小）」が使える
+集会施設**（区民センター・地区会館・区民集会所）の空き状況を定期取得し、
+**希望の日時・広さを複数候補入力して横断検索**できる静的サイトです。
 
 - **スクレイパー**（Python + Playwright）が GitHub Actions で定期実行 → JSON生成
 - **フロント**（Vite + React + TypeScript + Tailwind）が JSON を読み、検索UIを提供
@@ -11,7 +12,7 @@
 ```
 Googleスプレッドシート(広さ) ─┐
                               ▼
-  GitHub Actions（毎日）: けやきネット取得 → web/public/data/*.json をcommit
+  GitHub Actions（1日2回 10時/22時）: けやきネット取得 → web/public/data/*.json をcommit
                               ▼
   GitHub Pages: 静的サイトが JSON を読み込み、区/日時/広さで絞り込み表示
 ```
@@ -32,7 +33,7 @@ web/                     # フロント（Vite + React）
   public/data/           # ★ スクレイパーの出力先（availability.json / facilities.json）
   src/                   # UI
 .github/workflows/
-  scrape.yml             # 定期スクレイピング（毎日22:00 JST）＋公開
+  scrape.yml             # 定期スクレイピング（1日2回 10:00/22:00 JST）＋公開
   deploy.yml             # GitHub Pages へのビルド・デプロイ
 ```
 
@@ -55,7 +56,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r scraper/requirements.txt
 python -m playwright install chromium
 
-python scraper/main.py --days 14      # web/public/data/*.json を生成
+python scraper/main.py --months 2     # 2ヶ月先末日まで取得 → web/public/data/*.json
 HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
 ```
 
@@ -77,7 +78,10 @@ HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
 
 1. リポジトリ Settings > Pages > Build and deployment を **GitHub Actions** に設定
 2. `main` に push すると `deploy.yml` がビルド・公開
-3. `scrape.yml` が毎日データを更新し、その後サイトを再公開
+3. `scrape.yml` が1日2回（10時/22時 JST）データを更新し、その後サイトを再公開
+
+> ⚠️ スクレイピングは1回あたり数時間規模になり得ます。GitHub Actions の無料枠の都合上、
+> **Public（公開）リポジトリ**での運用を推奨します（Public は Actions 実行時間が無制限）。
 
 ## 区を追加するには
 

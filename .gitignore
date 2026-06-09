@@ -19,3 +19,6 @@ web/dist/
 
 # Scraper debug artifacts
 /scraper/debug/
+
+# 並列スクレイピングの中間ファイル（結合前の shard 別データ）
+/web/public/data/availability.part*.json
