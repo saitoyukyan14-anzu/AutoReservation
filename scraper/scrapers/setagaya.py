@@ -86,10 +86,12 @@ class SetagayaScraper(WardScraper):
                 page.evaluate("__doPostBack('next','')")
                 page.wait_for_url("**/WgR_ShisetsubetsuAkiJoukyou", timeout=NAV_TIMEOUT)
                 self._handle_modals(page)
+                self._wait_for_grid(page)
 
                 for w in range(len(windows)):
                     if w > 0:
                         self._period_next(page)
+                    self._wait_for_grid(page)
                     self._load_all(page, "td.shisetsu")
                     slots.extend(self._scrape_visible_window(page, date_from, date_to))
             finally:
@@ -151,6 +153,14 @@ class SetagayaScraper(WardScraper):
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(400)
 
+    def _wait_for_grid(self, page: Page) -> None:
+        """グリッド描画の完了を待つ（遷移途中のクエリで context が壊れるのを防ぐ）。"""
+        try:
+            page.wait_for_selector("table.calendar", timeout=NAV_TIMEOUT, state="attached")
+        except Exception:
+            pass
+        page.wait_for_timeout(400)
+
     # --- 1ウィンドウ分のドリル取得 --------------------------------------
 
     def _scrape_visible_window(
@@ -194,11 +204,16 @@ class SetagayaScraper(WardScraper):
         page.click("a.btnBlue:has-text('次へ進む')")
         page.wait_for_url("**/WgR_JikantaibetsuAkiJoukyou", timeout=NAV_TIMEOUT)
         self._handle_modals(page)
+        try:
+            page.wait_for_selector("table.calendar", timeout=NAV_TIMEOUT, state="attached")
+        except Exception:
+            pass
 
     def _go_back_to_grid(self, page: Page) -> None:
         page.click("a.btnBlue:has-text('前に戻る')")
         page.wait_for_url("**/WgR_ShisetsubetsuAkiJoukyou", timeout=NAV_TIMEOUT)
         self._handle_modals(page)
+        self._wait_for_grid(page)
 
     # --- 時間帯別ページの解析 -------------------------------------------
 
@@ -255,10 +270,15 @@ class SetagayaScraper(WardScraper):
 
     @staticmethod
     def _find_load_more(page: Page):
-        for el in page.query_selector_all("a, input[type=button], button"):
-            text = (el.get_attribute("value") or el.inner_text() or "").strip()
-            if text == "さらに読み込む" and el.is_visible():
-                return el
+        try:
+            elements = page.query_selector_all("a, input[type=button], button")
+            for el in elements:
+                text = (el.get_attribute("value") or el.inner_text() or "").strip()
+                if text == "さらに読み込む" and el.is_visible():
+                    return el
+        except Exception:
+            # 遷移中などで context が壊れたら「ボタンなし」扱いにする
+            return None
         return None
 
     def _handle_modals(self, page: Page) -> None:
