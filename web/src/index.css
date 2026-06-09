@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    /* 和紙のような淡いテクスチャ（控えめなドット） */
+    background-image: radial-gradient(rgba(31, 27, 22, 0.025) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  ::selection {
+    @apply bg-shu text-paper;
+  }
+}
+
+@layer utilities {
+  /* 縦書き見出し用 */
+  .tate {
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+  }
+  .hairline {
+    @apply border border-line;
+  }
+}

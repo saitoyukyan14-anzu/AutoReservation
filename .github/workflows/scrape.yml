@@ -1,0 +1,55 @@
+name: Scrape availability
+
+on:
+  schedule:
+    # 毎日 22:00 JST (= 13:00 UTC) に実行。時間帯ドリルは重いため1日1回。
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "取得日数（今日から何日先まで）"
+        default: "30"
+
+permissions:
+  contents: write # data/*.json をコミットするため
+  pages: write
+  id-token: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: scraper
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          SCRAPE_DAYS_AHEAD: ${{ github.event.inputs.days || '30' }}
+          FACILITIES_SHEET_CSV_URL: ${{ secrets.FACILITIES_SHEET_CSV_URL }}
+        run: python scraper/main.py --days "$SCRAPE_DAYS_AHEAD"
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add web/public/data/*.json
+          if git diff --staged --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "data: update availability ($(date -u +%Y-%m-%dT%H:%MZ))"
+            git push
+          fi
+
+  # スクレイプ後にサイトを再ビルド・公開
+  deploy:
+    needs: scrape
+    uses: ./.github/workflows/deploy.yml

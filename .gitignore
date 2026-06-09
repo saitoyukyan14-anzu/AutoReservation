@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Node / Vite
+node_modules/
+web/dist/
+*.log
+
+# Playwright
+/scraper/.pw-browsers/
+
+# OS / editor
+.DS_Store
+.claude/
+
+# Scraper debug artifacts
+/scraper/debug/

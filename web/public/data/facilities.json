@@ -1,0 +1,10 @@
+{
+  "facilities": [
+    { "ward": "世田谷区", "facility": "桜丘区民センター", "room": "第１会議室", "area_sqm": 45, "capacity": 25, "note": "" },
+    { "ward": "世田谷区", "facility": "桜丘区民センター", "room": "第２会議室", "area_sqm": 45, "capacity": 25, "note": "" },
+    { "ward": "世田谷区", "facility": "桜丘区民センター", "room": "集会室兼体育室", "area_sqm": 320, "capacity": 200, "note": "運動利用可" },
+    { "ward": "世田谷区", "facility": "弦巻区民センター", "room": "第３会議室", "area_sqm": null, "capacity": null, "note": "" },
+    { "ward": "世田谷区", "facility": "弦巻区民センター", "room": "大広間", "area_sqm": 80, "capacity": null, "note": "和室" },
+    { "ward": "世田谷区", "facility": "池尻地区会館", "room": "集会室Ａ", "area_sqm": 60, "capacity": 40, "note": "" }
+  ]
+}
