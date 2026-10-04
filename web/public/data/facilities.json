@@ -72,6 +72,20 @@
     {"ward": "世田谷区", "facility": "野沢地区会館", "url": "https://www.city.setagaya.lg.jp/02072/8558.html", "note": ""},
     {"ward": "世田谷区", "facility": "鎌田区民センター", "url": "https://www.city.setagaya.lg.jp/02219/8545.html", "note": ""},
     {"ward": "世田谷区", "facility": "鎌田区民集会所", "url": "https://www.city.setagaya.lg.jp/02219/8622.html", "note": ""},
-    {"ward": "世田谷区", "facility": "駒沢地区会館", "url": "https://www.city.setagaya.lg.jp/02212/8582.html", "note": ""}
+    {"ward": "世田谷区", "facility": "駒沢地区会館", "url": "https://www.city.setagaya.lg.jp/02212/8582.html", "note": ""},
+    {"ward": "文京区", "facility": "区民会議室", "url": "https://www.city.bunkyo.lg.jp/b011/p006676/index.html", "note": "４階ホールは平日夜間・土日祝のみ（平日昼間は「シルバーセンター」で貸出）"},
+    {"ward": "文京区", "facility": "大原地域活動センター", "url": "https://www.city.bunkyo.lg.jp/b011/p006657.html", "note": "令和8年10月18日（日）は定期清掃のため休館"},
+    {"ward": "文京区", "facility": "大塚地域活動センター", "url": "https://www.city.bunkyo.lg.jp/b011/p006658/index.html", "note": ""},
+    {"ward": "文京区", "facility": "向丘地域活動センター", "url": "https://www.city.bunkyo.lg.jp/b011/p006665/index.html", "note": "令和8年12月7日（月）は屋上植栽の植え替えのため休館"},
+    {"ward": "文京区", "facility": "汐見地域活動センター", "url": "https://www.city.bunkyo.lg.jp/b011/p006669/index.html", "note": ""},
+    {"ward": "文京区", "facility": "駒込地域活動センター", "url": "https://www.city.bunkyo.lg.jp/b011/p006671/index.html", "note": "改修工事のため地下2階ホールは令和9年3月31日まで貸出休止（予定）"},
+    {"ward": "文京区", "facility": "元町多目的室", "url": "https://www.city.bunkyo.lg.jp/b011/p006674/index.html", "note": ""},
+    {"ward": "文京区", "facility": "目白台交流館", "url": "https://www.city.bunkyo.lg.jp/b011/p006682/index.html", "note": ""},
+    {"ward": "文京区", "facility": "不忍通りふれあい館", "url": "https://www.city.bunkyo.lg.jp/b011/p006686/index.html", "note": ""},
+    {"ward": "文京区", "facility": "シルバーセンター", "url": "https://www.city.bunkyo.lg.jp/b017/p003266.html", "note": "平日昼間のみ。高齢者団体が優先で、一般は使用日の1か月前の1日から申込可"},
+    {"ward": "文京区", "facility": "男女平等センター", "url": "https://www.city.bunkyo.lg.jp/b005/p006250.html", "note": "一般団体は利用月の1か月前の1日から申込可。研修室は防音室ではないため音量に配慮が必要"},
+    {"ward": "文京区", "facility": "福祉センター江戸川橋", "url": "https://www.city.bunkyo.lg.jp/b017/p003269/index.html", "note": "一般団体は利用月の1か月前の1日から申込可。学習室・トレーニングルームは夜間のみ"},
+    {"ward": "文京区", "facility": "松聲閣集会室", "url": "https://www.city.bunkyo.lg.jp/b036/p006693.html", "note": ""},
+    {"ward": "文京区", "facility": "勤労福祉会館", "url": "https://www.city.bunkyo.lg.jp/b012/p006694/index.html", "note": "タップダンス・フラメンコ・バトンでの利用は不可。高校生の団体は利用不可"}
   ]
 }
