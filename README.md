@@ -7,6 +7,8 @@
 - **スクレイパー**（Python + Playwright）が GitHub Actions で定期実行 → JSON生成
 - **フロント**（Vite + React + TypeScript + Tailwind）が JSON を読み、検索UIを提供
 - **GitHub Pages** で配信（サーバー不要・無料）
+- 検索は **区（複数選択可）× 日付 × 時間帯** の候補を複数並べてOR検索。同じ部屋で間隔30分以内の
+  連続した枠は **表示上1行にまとめる**（例: 12:30–14:30 と 15:00–17:00 → 12:30–17:00。予約は枠ごと）
 - **施設情報（施設紹介ページへのリンク等）** は `web/public/data/facilities.json` で手動管理し、空き状況に結合して表示
 
 ```

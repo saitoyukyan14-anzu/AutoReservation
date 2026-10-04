@@ -16,6 +16,11 @@ permissions:
   pages: write
   id-token: write
 
+# 実行が重ならないようにする（前回の実行中に次の定期実行が来たら待たせる）
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
 env:
   # 取得の時間予算（分）。これを過ぎたスクレイパーは、そこまでの取得分で打ち切って part を書き出す。
   # scrape ジョブの timeout-minutes（350）から、セットアップ（依存インストール）と
@@ -107,6 +112,8 @@ jobs:
             echo "変更なし"
           else
             git commit -m "data: update availability ($(date -u +%Y-%m-%dT%H:%MZ))"
+            # 取得中（最大約6時間）に main が進んでいても push できるよう、最新に載せ直す
+            git pull --rebase origin "${GITHUB_REF_NAME}"
             git push
           fi
 
