@@ -16,6 +16,12 @@
 
 高速化: 遅い networkidle を使わず、URL変化(wait_for_url)と domcontentloaded で待つ。
 記号: ○=空き / △=一部空き / ×=空きなし / －=申込期間外 / ＊=公開対象外
+
+並列化: 対象施設を shard で分割する（supports_shard=True）。
+時間予算: 期間ウィンドウ・日付バッチの区切りで self.out_of_time() を確認し、
+          期限を過ぎたらそこまでの取得分を返して終了する。
+取得範囲の記録: 施設選択時に担当施設名（正規化後）を、期間ウィンドウを1つ取り終えるごとに
+          そのウィンドウの最終日を completed_until として記録する（combine での補完用）。
 """
 from __future__ import annotations
 
@@ -40,7 +46,10 @@ CAPACITY_RE = re.compile(r"定員\s*(\d+)")
 
 
 class SetagayaScraper(WardScraper):
+    key = "setagaya"
     ward_name = "世田谷区"
+    # 並列実行用：対象施設を shard_count 個に分割し、この shard だけ担当する
+    supports_shard = True
 
     def __init__(
         self,
@@ -49,14 +58,15 @@ class SetagayaScraper(WardScraper):
         max_windows: int | None = None,
         shard_index: int = 0,
         shard_count: int = 1,
+        deadline: float | None = None,
     ):
+        super().__init__(shard_index=shard_index, shard_count=shard_count, deadline=deadline)
         self.purposes = purposes or config.SETAGAYA_PURPOSES
         # テスト用に施設・期間を絞り込む手段（本番は None）
         self._max_facilities = max_facilities
         self._max_windows = max_windows
-        # 並列実行用：対象施設を shard_count 個に分割し、この shard だけ担当する
-        self.shard_index = shard_index
-        self.shard_count = max(1, shard_count)
+        # 正規化で施設名が変わったものをログに出す（同じ名前は1回だけ）
+        self._renamed: set[str] = set()
 
     # --- エントリポイント -----------------------------------------------
 
@@ -66,6 +76,9 @@ class SetagayaScraper(WardScraper):
             windows = windows[: self._max_windows]
 
         slots: list[Slot] = []
+        if self.out_of_time("取得開始前"):
+            return slots
+        done_windows = 0
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=config.HEADLESS)
             context = browser.new_context(
@@ -89,15 +102,32 @@ class SetagayaScraper(WardScraper):
                 self._wait_for_grid(page)
 
                 for w in range(len(windows)):
+                    label = f"ウィンドウ {w + 1}/{len(windows)}"
+                    if self.out_of_time(f"{label} の開始前"):
+                        break
                     if w > 0:
                         self._period_next(page)
                     self._wait_for_grid(page)
                     self._load_all(page, "td.shisetsu")
-                    slots.extend(self._scrape_visible_window(page, date_from, date_to))
+                    slots.extend(self._scrape_visible_window(page, date_from, date_to, label))
+                    if self.timed_out:
+                        break
+                    done_windows += 1
+                    # このウィンドウ（14日分）の全担当施設を取り終えた
+                    self.mark_completed_until(_window_last_day(windows[w], date_to))
             finally:
                 context.close()
                 browser.close()
-        return _dedupe(slots)
+        result = _dedupe(slots)
+        if self.timed_out:
+            covered = "完了したウィンドウなし"
+            if self.completed_until is not None:
+                covered = f"{windows[0]}〜{self.completed_until} は完了"
+            print(
+                f"[setagaya] 時間切れで打ち切り: {done_windows}/{len(windows)} ウィンドウ"
+                f"（{covered}）、{len(result)} 件を返します。"
+            )
+        return result
 
     # --- 検索・施設選択 -------------------------------------------------
 
@@ -112,24 +142,30 @@ class SetagayaScraper(WardScraper):
         page.wait_for_url("**/WgR_ShisetsuKensaku", timeout=NAV_TIMEOUT)
 
     def _select_target_facilities(self, page: Page) -> int:
-        """区民センター/地区会館/区民集会所のうち、この shard が担当する施設を選択。"""
-        # 対象施設コードを収集（順序を安定させるためソート）
-        targets: list[str] = []
+        """区民センター/地区会館/区民集会所のうち、この shard が担当する施設を選択。
+
+        担当施設名（正規化後）を `set_assigned_facilities()` で記録する（combine での補完用）。
+        """
+        # 対象施設（コード, 施設名）を収集（順序を安定させるためコードでソート）
+        targets: list[tuple[str, str]] = []
         for cb in page.query_selector_all("input[name='checkShisetsu']"):
             code = cb.get_attribute("value")
             label = page.query_selector(f"label[for='checkShisetsu{code}']")
             name = label.inner_text().strip() if label else ""
             if _is_target(name):
-                targets.append(code)
-        targets.sort()
+                targets.append((code, name))
+        targets.sort(key=lambda t: t[0])
 
         # shard で分割（並列ジョブ間で重複なく分担）
-        if self.shard_count > 1:
-            targets = [c for i, c in enumerate(targets) if i % self.shard_count == self.shard_index]
+        targets = self.shard_items(targets)
         if self._max_facilities is not None:
             targets = targets[: self._max_facilities]
 
-        for code in targets:
+        # 時間帯別ページの施設名(H3)と同じ正規化をかけて記録する。
+        # 表記がずれて H3 側にしか無い施設名は、combine が part の枠から拾って担当に含める。
+        self.set_assigned_facilities(self._facility_name(name) for _code, name in targets)
+
+        for code, _name in targets:
             self._ensure_checked(page, f"checkShisetsu{code}")
         self._pause(page)
         return len(targets)
@@ -164,11 +200,14 @@ class SetagayaScraper(WardScraper):
     # --- 1ウィンドウ分のドリル取得 --------------------------------------
 
     def _scrape_visible_window(
-        self, page: Page, date_from: dt.date, date_to: dt.date
+        self, page: Page, date_from: dt.date, date_to: dt.date, label: str = ""
     ) -> list[Slot]:
         values = self._read_available(page, date_from, date_to)
+        batches = list(_chunks(values, MAX_SELECT_PER_BATCH))
         slots: list[Slot] = []
-        for batch in _chunks(values, MAX_SELECT_PER_BATCH):
+        for i, batch in enumerate(batches):
+            if self.out_of_time(f"{label} の日付バッチ {i + 1}/{len(batches)} の開始前"):
+                break
             self._select_cells(page, batch)
             self._click_next_step(page)
             slots.extend(self._parse_timeband_page(page))
@@ -226,7 +265,7 @@ class SetagayaScraper(WardScraper):
             if el.evaluate("e => e.tagName") == "H3":
                 text = el.inner_text().strip()
                 if text and "記号の見方" not in text:
-                    facility = re.sub(r"《.*?》", "", text).strip()
+                    facility = self._facility_name(text)
                 continue
             date = _find_date(el.inner_text())
             header = el.query_selector_all("tr:first-child th, tr:first-child td")
@@ -245,6 +284,15 @@ class SetagayaScraper(WardScraper):
         return slots
 
     # --- 共通ユーティリティ ---------------------------------------------
+
+    def _facility_name(self, text: str) -> str:
+        """画面上の施設名から《…》と付記を除いた施設名を返す（変わったものは1回だけログに出す）。"""
+        raw = re.sub(r"《.*?》", "", text).strip()
+        facility = normalize_facility_name(raw)
+        if facility != raw and raw not in self._renamed:
+            self._renamed.add(raw)
+            print(f"[setagaya] 施設名を正規化: {raw!r} → {facility!r}")
+        return facility
 
     def _load_all(self, page: Page, item_selector: str) -> None:
         """『さらに読み込む』を、件数が増えなくなる/ボタンが消えるまで押す。"""
@@ -302,6 +350,30 @@ class SetagayaScraper(WardScraper):
 
 
 # --- モジュール関数 ------------------------------------------------------
+
+
+# 時間帯別ページの施設名(H3)には付記が続くことがある。
+#   例) 「三軒茶屋区民集会所 :太子堂出張所・…」「経堂南地区会館 和室に鏡はありません。」
+# 最初の空白（半角/全角）またはコロン（: ：）より前を施設名とする。
+_FACILITY_NAME_SEP_RE = re.compile(r"[\s\u3000:：]")
+
+
+def normalize_facility_name(name: str) -> str:
+    """施設名から付記を取り除く。異常時（空になる／施設種別のキーワードが消える）は元の名前を返す。"""
+    original = name.strip()
+    head = _FACILITY_NAME_SEP_RE.split(original, maxsplit=1)[0]
+    if not head:
+        return original
+    # 施設名本体の途中で切れてしまった（「区民センター」等が消えた）場合は切らない
+    keywords = config.SETAGAYA_TARGET_KEYWORDS
+    if any(k in original for k in keywords) and not any(k in head for k in keywords):
+        return original
+    return head
+
+
+def _window_last_day(window_start: dt.date, date_to: dt.date) -> dt.date:
+    """期間ウィンドウ（1画面 DAYS_PER_PAGE 日）の最終日。取得期間の最終日で頭打ち。"""
+    return min(window_start + dt.timedelta(days=DAYS_PER_PAGE - 1), date_to)
 
 
 def _is_target(name: str) -> bool:

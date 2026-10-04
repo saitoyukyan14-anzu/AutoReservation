@@ -27,6 +27,10 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scrape.yml から呼ばれたとき、既定（トリガー時点のSHA）だと combine が push した
+          # 最新データを含まないため、ブランチの最新を取得する
+          ref: ${{ github.ref }}
 
       - uses: actions/setup-node@v4
         with:
