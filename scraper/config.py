@@ -20,6 +20,11 @@ FACILITIES_JSON = DATA_DIR / "facilities.json"
 # 例) 2ヶ月 → 6月中に実行すれば 8月31日まで。
 SCRAPE_MONTHS_AHEAD = int(os.environ.get("SCRAPE_MONTHS_AHEAD", "2"))
 
+# 取得の時間予算（分）。プロセス開始からこの時間を過ぎたら、各スクレイパーは
+# そこまでの取得分を返して打ち切る（GitHub Actions の1ジョブ6時間上限で強制終了され、
+# 結果が全損するのを防ぐ）。0 以下で無制限。`main.py --time-budget-min` で上書きできる。
+TIME_BUDGET_MIN = float(os.environ.get("SCRAPE_TIME_BUDGET_MIN", "330"))
+
 # 世田谷区：「使用目的から探す」で指定する用途コード（checkPurposeMiddle の値）。
 # 131:その他ダンス（音量大） 136:その他ダンス（音量小）
 SETAGAYA_PURPOSES = os.environ.get("SETAGAYA_PURPOSES", "131,136").split(",")

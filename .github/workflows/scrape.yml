@@ -17,17 +17,38 @@ permissions:
   id-token: write
 
 env:
-  # 並列分割数。matrix の shard 個数と必ず一致させること。
-  SHARD_COUNT: "5"
+  # 取得の時間予算（分）。これを過ぎたスクレイパーは、そこまでの取得分で打ち切って part を書き出す。
+  # scrape ジョブの timeout-minutes（350）から、セットアップ（依存インストール）と
+  # 書き出し・アップロードの時間を引いた値にすること。
+  TIME_BUDGET_MIN: "330"
 
 jobs:
-  # 施設を5分割し、5ジョブ並列で取得（各ジョブが part ファイルを生成）
+  # 「区 × shard」ごとに1ジョブで並列取得（各ジョブが part ファイルを1つ生成）
   scrape:
+    name: scrape ${{ matrix.ward }} [${{ matrix.shard }}] (${{ matrix.shards }}分割)
     runs-on: ubuntu-latest
+    # GitHub Actions の1ジョブ上限は6時間。強制終了されると結果が全損するので手前で止める
+    # （スクレイパー側も TIME_BUDGET_MIN で自主的に打ち切る）。
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4]
+        # ── 区を追加するときは、ここに行を追加する ────────────────────────────
+        #   ward:   区キー（scraper/scrapers/<区>.py のクラスの `key`）
+        #   shards: その区の分割数（supports_shard=False のスクレイパーは必ず 1）
+        #   shard:  0 〜 shards-1 を「すべて」1行ずつ並べる（欠けた shard の施設は取得されない）
+        # 例) 文京区を分割なしで追加する場合:
+        #   - { ward: bunkyo, shards: 1, shard: 0 }
+        # 例) 新宿区を2分割で追加する場合:
+        #   - { ward: shinjuku, shards: 2, shard: 0 }
+        #   - { ward: shinjuku, shards: 2, shard: 1 }
+        include:
+          # 世田谷区（5分割）
+          - { ward: setagaya, shards: 5, shard: 0 }
+          - { ward: setagaya, shards: 5, shard: 1 }
+          - { ward: setagaya, shards: 5, shard: 2 }
+          - { ward: setagaya, shards: 5, shard: 3 }
+          - { ward: setagaya, shards: 5, shard: 4 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,19 +59,29 @@ jobs:
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
-      - name: Run scraper (shard ${{ matrix.shard }})
+      - name: Run scraper (${{ matrix.ward }} shard ${{ matrix.shard }}/${{ matrix.shards }})
         env:
           MONTHS: ${{ github.event.inputs.months || '2' }}
-        run: python scraper/main.py --months "$MONTHS" --shard-index ${{ matrix.shard }} --shard-count ${{ env.SHARD_COUNT }}
+        run: >-
+          python scraper/main.py
+          --ward "${{ matrix.ward }}"
+          --months "$MONTHS"
+          --shard-index ${{ matrix.shard }}
+          --shard-count ${{ matrix.shards }}
+          --time-budget-min "$TIME_BUDGET_MIN"
       - uses: actions/upload-artifact@v4
         with:
-          name: avail-part-${{ matrix.shard }}
-          path: web/public/data/availability.part${{ matrix.shard }}.json
+          name: avail-part-${{ matrix.ward }}-${{ matrix.shard }}
+          path: web/public/data/availability.part.${{ matrix.ward }}.${{ matrix.shard }}.json
+          if-no-files-found: error
           retention-days: 1
 
-  # 全 shard の結果を結合し、コミット
+  # 全 part を結合し、コミット
   combine:
     needs: scrape
+    # 一部の区・shard が失敗しても結合する（part が1つも無い区は既存の availability.json から
+    # 引き継ぐ）。ワークフロー自体がキャンセルされた場合は結合しない。
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,14 +90,14 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies (no browser needed)
         run: pip install -r scraper/requirements.txt
-      - name: Download shard results
+      - name: Download part files
         uses: actions/download-artifact@v4
         with:
           pattern: avail-part-*
           merge-multiple: true
           path: web/public/data
       - name: Combine into availability.json
-        run: python scraper/main.py --combine --shard-count "$SHARD_COUNT"
+        run: python scraper/main.py --combine
       - name: Commit updated data
         run: |
           git config user.name "github-actions[bot]"
@@ -82,4 +113,7 @@ jobs:
   # サイトを再ビルド・公開
   deploy:
     needs: combine
+    # scrape の一部が失敗していても、combine が成功していれば公開する
+    # （既定の success() は scrape の失敗まで遡って見るため、明示的に条件を書く）
+    if: ${{ !cancelled() && needs.combine.result == 'success' }}
     uses: ./.github/workflows/deploy.yml

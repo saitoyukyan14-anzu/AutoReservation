@@ -32,7 +32,7 @@ web/                     # フロント（Vite + React）
   public/data/           # ★ スクレイパーの出力先（availability.json / facilities.json）
   src/                   # UI
 .github/workflows/
-  scrape.yml             # 定期スクレイピング（1日2回 10:00/22:00 JST）＋公開
+  scrape.yml             # 定期スクレイピング（1日2回 10:00/22:00 JST。区×shard の並列ジョブ）＋公開
   deploy.yml             # GitHub Pages へのビルド・デプロイ
 ```
 
@@ -55,9 +55,23 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r scraper/requirements.txt
 python -m playwright install chromium
 
-python scraper/main.py --months 2     # 2ヶ月先末日まで取得 → web/public/data/*.json
+python scraper/main.py --months 2     # 全区を2ヶ月先末日まで取得 → web/public/data/*.json
 HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
+
+# 1区だけ取得（part ファイルを出力）→ 結合して availability.json に反映
+python scraper/main.py --ward setagaya
+python scraper/main.py --combine       # part が無い区は既存の availability.json から引き継ぐ
+
+# 1区を分割して取得（GitHub Actions の matrix と同じ動かし方）
+python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
 ```
+
+| オプション | 説明 |
+| --- | --- |
+| `--ward <区キー>` | その区だけ取得し `web/public/data/availability.part.<区キー>.<shard>.json` を出力（結合は `--combine`） |
+| `--shard-index` / `--shard-count` | 区内の施設を分割して担当分だけ取得。shard 非対応の区に `--shard-count 2` 以上を指定するとエラー |
+| `--time-budget-min N` | 時間予算（分、既定 330）。超えたらそこまでの取得分で打ち切って書き出す。0 以下で無制限 |
+| `--combine` | part ファイルを結合して `availability.json` を更新。part が1つも無い区は既存データを引き継ぎ、shard 欠け・時間切れは警告を出す |
 
 > ⚠️ 時間帯までのドリル取得は相手サーバーへのアクセスが多いため、`config.REQUEST_DELAY_SEC`
 > で間隔を空けています。低頻度（1日1回程度）の利用にとどめてください。
@@ -84,14 +98,39 @@ HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
 2. `main` に push すると `deploy.yml` がビルド・公開
 3. `scrape.yml` が1日2回（10時/22時 JST）データを更新し、その後サイトを再公開
 
+`scrape.yml` は「区 × shard」ごとに1ジョブで並列取得し（世田谷区は5分割）、最後に `combine`
+ジョブが結合・コミットします。GitHub Actions は1ジョブ6時間が上限のため、各ジョブに
+`timeout-minutes: 350` を設定し、スクレイパー側も時間予算（`TIME_BUDGET_MIN`、既定 330 分）を
+過ぎたらそこまでの取得分で打ち切って結果を残します。一部の区のジョブが全て失敗しても、
+その区は前回のデータを引き継いで他の区だけ更新します。
+
 > ⚠️ スクレイピングは1回あたり数時間規模になり得ます。GitHub Actions の無料枠の都合上、
 > **Public（公開）リポジトリ**での運用を推奨します（Public は Actions 実行時間が無制限）。
 
 ## 区を追加するには
 
-1. `scraper/scrapers/<区名>.py` に `WardScraper` を継承したクラスを作成し `scrape()` を実装
+1. `scraper/scrapers/<区名>.py` に `WardScraper` を継承したクラスを作成する
+   - `key`（区キー。英小文字・数字・`_`。例: `"bunkyo"`）と `ward_name`（例: `"文京区"`）を設定し、`scrape()` を実装
+   - 施設・期間・ページ等の長いループの区切りで `self.out_of_time("どこで")` を確認し、
+     True ならそこまでの取得分を返して終了する（時間予算。ログに「時間切れで打ち切り」と出る）
+   - 1区を複数ジョブに分割したい場合は `supports_shard = True` にし、対象施設の一覧を
+     全 shard で同じ順序に並べてから `self.shard_items(施設一覧)` で担当分だけ取得する
+     （非対応のまま `--shard-count 2` 以上で動かすとエラーになり、重複取得を防ぐ）
+   - `__init__` を独自に定義する場合は `shard_index` / `shard_count` / `deadline` を受け取り
+     `super().__init__(...)` に渡す
 2. `scraper/scrapers/__init__.py` の `ALL_SCRAPERS` に追加
+3. `.github/workflows/scrape.yml` の `jobs.scrape.strategy.matrix.include` に「区 × shard」の行を追加
+   （`shard` は 0〜`shards`-1 をすべて並べる。shard 非対応なら `shards: 1` の1行）
 
+   ```yaml
+   - { ward: bunkyo, shards: 1, shard: 0 }          # 分割なし
+   - { ward: shinjuku, shards: 2, shard: 0 }        # 2分割
+   - { ward: shinjuku, shards: 2, shard: 1 }
+   ```
+
+4. ローカルで `python scraper/main.py --ward <区キー>` → `python scraper/main.py --combine` を実行して確認
+
+matrix に追加し忘れた区は part が出ないため、`combine` が前回データを引き継ぎつつ警告を出します。
 出力（`Slot`）の形式は全区共通なので、フロントは無改修で新しい区に対応します。
 
 ## 注意
