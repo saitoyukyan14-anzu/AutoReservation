@@ -10,6 +10,9 @@ on:
       months:
         description: "取得範囲（今日からNヶ月先の末日まで）"
         default: "2"
+      bunkyo_rotation:
+        description: "文京区の輪番の組（0 始まり。空なら UTC の日付・時刻から自動: 12時前=0、12時以降=1）"
+        default: ""
 
 permissions:
   contents: write # data/*.json をコミットするため
@@ -58,7 +61,8 @@ jobs:
           - { ward: shinjuku, shards: 1, shard: 0 }
           # 文京区（分割なし）。robots.txt が Disallow: /* のため、ユーザー承認の控えめな条件で運用する:
           # 並列1本（shards は必ず 1。スクレイパーも分割に対応させていない）・操作ごとに3秒以上待機・
-          # 1セッション3施設×2週間表示まで。所要は約40〜45分の見込み（実測から。リクエスト数の上限については README 参照）。
+          # 1セッション3施設×2週間表示まで・1実行のリクエスト800件まで。施設グループを2組の輪番にし、
+          # 朝（UTC 01:00）と夜（UTC 13:00）で別の組を取得する（各施設は1日1回更新。詳細は README）。
           - { ward: bunkyo, shards: 1, shard: 0 }
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +77,8 @@ jobs:
       - name: Run scraper (${{ matrix.ward }} shard ${{ matrix.shard }}/${{ matrix.shards }})
         env:
           MONTHS: ${{ github.event.inputs.months || '2' }}
+          # 文京区の輪番の組（手動実行で指定したときだけ。空なら自動）
+          BUNKYO_ROTATION_INDEX: ${{ github.event.inputs.bunkyo_rotation || '' }}
         run: >-
           python scraper/main.py
           --ward "${{ matrix.ward }}"

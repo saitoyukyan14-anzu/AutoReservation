@@ -30,6 +30,13 @@
   - 呼ばなかった場合: 担当施設は「不明」（None）として記録され、combine はその part について
     従来どおりの扱い（補完なし）になる。completed_until は、時間切れでなければ取得期間の
     最終日、時間切れなら「完了日なし」（None）として記録される。
+  - 施設ごとに取得の進み具合が違うスクレイパー（施設のグループを順に取る等）は、
+    `self.mark_facility_completed_until(施設名, 日付)` で施設ごとの完了日も記録できる。part の
+    `facility_completed_until` になり、combine の打ち切り補完は施設単位で行われる（最後まで取れた
+    施設には前回データを補わない）。担当施設のうち記録の無い施設は completed_until で扱う。
+  - 設計上「今回は取得しない」施設（輪番で取得する場合の、今回の番ではない施設）は
+    `self.set_carry_over_facilities(施設名一覧)` で記録する。part の `carry_over_facilities` になり、
+    combine はそれらの施設の前回データをそのまま引き継ぐ（警告は出さない）。
 
 サブクラスで `__init__` を定義する場合は、必ず `shard_index` / `shard_count` / `deadline`
 を受け取り `super().__init__(...)` に渡すこと。
@@ -88,6 +95,10 @@ class WardScraper(ABC):
         self.assigned_facilities: list[str] | None = None
         #: 全担当施設について取得を完了した最終日。None は「1日も完了していない（未記録）」。
         self.completed_until: dt.date | None = None
+        #: 施設ごとの完了日（施設名 → 日付。None はその施設で完了した日なし）。None は「未記録」。
+        self.facility_completed_until: dict[str, dt.date | None] | None = None
+        #: 設計上今回は取得しない施設（前回データを引き継ぐ）。None は「未記録」。
+        self.carry_over_facilities: list[str] | None = None
 
     # --- shard 分割 ---------------------------------------------------------
 
@@ -145,6 +156,23 @@ class WardScraper(ABC):
         """全担当施設について date まで取得を完了したことを記録する（後退はしない）。"""
         if self.completed_until is None or date > self.completed_until:
             self.completed_until = date
+
+    def mark_facility_completed_until(self, name: str, date: dt.date | None) -> None:
+        """施設 name について date まで取得を完了したことを記録する（後退はしない）。
+
+        date=None は「まだ完了した日なし」として施設を登録するだけ（既に日付があれば変えない）。
+        """
+        if self.facility_completed_until is None:
+            self.facility_completed_until = {}
+        current = self.facility_completed_until.get(name)
+        if date is not None and (current is None or date > current):
+            self.facility_completed_until[name] = date
+        else:
+            self.facility_completed_until.setdefault(name, None)
+
+    def set_carry_over_facilities(self, names: Iterable[str]) -> None:
+        """設計上今回は取得しない施設（combine が前回データをそのまま引き継ぐ）を記録する。"""
+        self.carry_over_facilities = sorted({n for n in names if n})
 
     # --- 取得本体 -----------------------------------------------------------
 

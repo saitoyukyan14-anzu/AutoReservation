@@ -16,6 +16,9 @@ part ファイル名は `availability.part.<区キー>.<shard番号>.json`。主
   stop_reason      時間切れ以外で打ち切った場合の理由（ログ用）。null は時間切れ／打ち切りなし
   facilities       この shard の担当施設名一覧（正規化後）。null は「不明」
   completed_until  全担当施設について取得を完了した最終日。null は「完了した日なし」
+  facility_completed_until  施設ごとの完了日 {施設名: 日付 or null}。null（キーなし）は「未記録」
+                   （打ち切り時の補完は、これがあれば施設単位、無ければ completed_until で行う）
+  carry_over_facilities  設計上今回は取得しない施設（輪番など）。combine が前回データをそのまま引き継ぐ
 facilities キーが無い part は旧形式として扱う（combine での補完なし＝従来どおり）。
 """
 from __future__ import annotations
@@ -166,6 +169,8 @@ def run_scrape(
             "stop_reason": stop_reason if scraper.timed_out else None,
             "facilities": facilities,
             "completed_until": completed_until.isoformat() if completed_until else None,
+            "facility_completed_until": _facility_until(getattr(scraper, "facility_completed_until", None)),
+            "carry_over_facilities": getattr(scraper, "carry_over_facilities", None),
             "slots": [s.to_dict() for s in slots],
         })
         print(f"[main] {len(slots)} 件を {out.name} に書き出しました。")
@@ -176,6 +181,12 @@ def run_scrape(
         # ローカルの全区一括実行：今回書き出した part だけを結合して availability.json を更新
         rc = run_combine(written) or rc
     return rc
+
+
+def _facility_until(value: dict | None) -> dict | None:
+    if value is None:
+        return None
+    return {name: (d.isoformat() if d else None) for name, d in sorted(value.items())}
 
 
 def _load_existing_slots() -> list[dict]:
@@ -230,6 +241,21 @@ def _completed_until(part: dict, tag: str) -> str | None:
         return None
 
 
+def _facility_completed_until(part: dict, tag: str) -> dict[str, str | None] | None:
+    """part の facility_completed_until（{施設名: YYYY-MM-DD or None}）。無い・不正なら None（未記録）。"""
+    value = part.get("facility_completed_until")
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, str | None] = {}
+    for fac, d in value.items():
+        try:
+            out[fac] = dt.date.fromisoformat(d).isoformat() if d is not None else None
+        except (TypeError, ValueError):
+            _warn("combine", f"{tag} の facility_completed_until[{fac!r}] が不正です（完了日なしとして扱います）: {d!r}")
+            out[fac] = None
+    return out
+
+
 def _names(names: list[str], limit: int = 10) -> str:
     shown = "、".join(names[:limit])
     return shown + (f" ほか {len(names) - limit} 施設" if len(names) > limit else "")
@@ -244,8 +270,12 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
     - part が1つも無い区（ジョブが全失敗、または matrix 未登録）は、その区の枠をすべて引き継ぐ。
     - shard が欠けた区は、今回どの part の担当施設にも含まれない施設の枠を引き継ぐ。
       取得開始前に時間切れになった part（担当施設不明・0 件）も「欠けた shard」として扱う。
-    - 時間切れの part は、その担当施設の枠のうち completed_until より後の日付を引き継ぐ
-      （completed_until が null なら担当施設の全期間）。
+    - 時間切れ（打ち切り）の part は、その担当施設の枠のうち completed_until より後の日付を引き継ぐ
+      （completed_until が null なら担当施設の全期間）。part に facility_completed_until があれば
+      施設ごとの完了日で同じことを行い、最後まで取れた施設には補わない。いずれも今回取得できた
+      （施設, 日付）には補わない。
+    - part の carry_over_facilities（設計上今回は取得しない施設。輪番など）は、前回データをそのまま
+      引き継ぐ（情報ログのみ）。これらは「担当に無い施設」として捨てる対象にはならない。
     - 旧形式・担当施設不明の part は補完せず警告だけ出す（従来どおり）。その part がある区では
       欠けた shard の補完もしない（どの施設が欠けたのか判断できないため）。
     - 全 shard がそろった区では、どの part の担当にも無い施設（前回データにしか無い施設）は
@@ -320,6 +350,17 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
         if noinfo:
             _warn("combine", f"{tag}: shard {noinfo} は取得開始前に時間切れになりました（担当施設不明・0 件）。part が無いものとして扱います。")
 
+        # 設計上今回は取得しない施設（輪番など）は、前回データをそのまま引き継ぐ（警告ではなく情報）
+        carry: set[str] = set()
+        for i, d, k in kinds:
+            if k == "known" and isinstance(d.get("carry_over_facilities"), list):
+                carry |= set(d["carry_over_facilities"])
+        carry -= covered  # 今回取得した施設は引き継がない
+        if carry:
+            n = add([s for s in old_slots(name) if s["facility"] in carry])
+            print(f"[combine] {tag}: 今回は取得しない設計の {len(carry)} 施設（輪番など）は、前回データ {n} 件をそのまま引き継ぎます: {_names(sorted(carry))}")
+        covered |= carry
+
         # 欠けた shard（part なし・取得開始前に時間切れ）の施設を補う
         holes = sorted(missing + noinfo)
         if holes:
@@ -353,22 +394,36 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
                 continue
             facs = coverage[i]
             until = _completed_until(d, f"{tag} shard {i}")
+            by_facility = _facility_completed_until(d, f"{tag} shard {i}")
             # 打ち切られたウィンドウ内でも、今回取得できた（施設, 日付）には前回の枠を混ぜない
             fetched = {(s["facility"], s["date"]) for s in d.get("slots", [])}
-            fill = [
-                s for s in old_slots(name)
-                if s["facility"] in facs
-                and (until is None or s["date"] > until)
-                and (s["facility"], s["date"]) not in fetched
-            ]
+            olds = old_slots(name)
+            fill: list[dict] = []
+            complete: list[str] = []
+            for fac in sorted(facs):
+                # 施設ごとの完了日があればそれを使う（無い施設・無い part は completed_until）
+                fac_until = by_facility[fac] if by_facility is not None and fac in by_facility else until
+                if by_facility is not None and fac_until is not None and fac_until >= d["date_to"]:
+                    complete.append(fac)  # 最後まで取れた施設には補わない
+                    continue
+                fill += [
+                    s for s in olds
+                    if s["facility"] == fac
+                    and (fac_until is None or s["date"] > fac_until)
+                    and (s["facility"], s["date"]) not in fetched
+                ]
             n = add(fill)
             filled = sorted({s["facility"] for s in fill})
+            detail = f": {_names(filled)}" if filled else ""
+            if by_facility is not None:
+                partial = len(facs) - len(complete)
+                _warn("combine", f"{tag}: shard {i} は{why}で打ち切られました（施設ごとの完了日で補完。担当 {len(facs)} 施設のうち最後まで取得 {len(complete)} 施設は補わず、残り {partial} 施設の未取得の日付の枠 {n} 件を既存の {src}（前回データ）から補いました。今回取得できた日は補っていません）{detail}")
+                continue
             if until is None:
                 what = f"取得を完了した日がありません。担当 {len(facs)} 施設の全期間"
             else:
                 after = (dt.date.fromisoformat(until) + dt.timedelta(days=1)).isoformat()
                 what = f"{until} まで取得完了。担当 {len(facs)} 施設の {after} 以降"
-            detail = f": {_names(filled)}" if filled else ""
             _warn("combine", f"{tag}: shard {i} は{why}で打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。今回取得できた日は補っていません）{detail}")
 
     payload = {

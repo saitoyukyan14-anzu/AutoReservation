@@ -77,40 +77,72 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 # ── 文京区「文の京」施設予約ねっと ─────────────────────────────────────────
 # robots.txt は `Disallow: /*`（許可は *.html と /*/Home のみ）で、空き照会の画面はクロール禁止に当たる。
 # ユーザーが承知の上で、次の控えめな条件での運用を承認している:
-#   1日1〜2回（scrape.yml の cron）／操作ごとに3秒以上待機／並列1本（shard 分割しない）／
-#   1セッションの照会は3施設・2週間表示まで。
-# 下の値のうち、この条件に関わるものは環境変数で緩められないよう上限・下限をかけている。
+#   1日2回（scrape.yml の cron。施設グループを輪番にするので、各施設の更新は1日1回）／
+#   操作ごとに3秒以上待機／並列1本（shard 分割しない）／1セッションの照会は3施設・2週間表示まで／
+#   1回の実行で対象ホストへ送るリクエストは800件まで。
+# 下の値のうち、この条件に関わるものは環境変数で緩められないよう上限・下限をかけている
+# （緩める方向に変えるにはユーザーの承認が必要）。
 
 # 「利用目的から探す」の分類と利用目的（HomeModel の value）。
 # 分類 3:体操・ダンス ／ 利用目的 40:ダンス（41:バレエ 37:体操・ストレッチ 39:ヨガ・ピラティス）
 BUNKYO_PURPOSE_CATEGORY = os.environ.get("BUNKYO_PURPOSE_CATEGORY", "3")
 BUNKYO_PURPOSES = _env_list("BUNKYO_PURPOSES", ["40"])
 
-# 取得対象の施設名（許可リスト。施設選択画面の表記と完全一致）。ユーザー承認済みの B案（14施設）。
-# 検索結果にあってここに無い施設は取得しない（ログに出す）。ここにあって検索結果に無い施設は警告を出す。
-BUNKYO_TARGET_FACILITIES = _env_list("BUNKYO_TARGET_FACILITIES", [
-    # 地域の集会施設（A案）
-    "区民会議室",
-    "大原地域活動センター",
-    "大塚地域活動センター",
-    "向丘地域活動センター",
-    "汐見地域活動センター",
-    "駒込地域活動センター",
-    "元町多目的室",
-    "目白台交流館",
-    "不忍通りふれあい館",
-    # 目的が決まった集会施設（B案で追加）
-    "シルバーセンター",
-    "男女平等センター",
-    "福祉センター江戸川橋",
-    "松聲閣集会室",
-    "勤労福祉会館",
-])
+# 取得対象の施設と、1セッションで一緒に照会するグループ（1グループ3施設まで）。ユーザー決定の11施設。
+# 名前は施設選択画面の表記と完全一致。グループは下の見込み（BUNKYO_FACILITY_WEIGHTS）で輪番に振り分ける。
+BUNKYO_FACILITY_GROUPS: list[list[str]] = [
+    ["福祉センター江戸川橋"],
+    ["区民会議室", "シルバーセンター", "男女平等センター"],
+    ["駒込地域活動センター", "不忍通りふれあい館", "元町多目的室"],
+    ["汐見地域活動センター", "向丘地域活動センター"],
+    ["大原地域活動センター", "大塚地域活動センター"],
+]
+# 取得対象の施設名（許可リスト）。既定は上のグループの全施設。BUNKYO_TARGET_FACILITIES（カンマ区切り）で
+# 絞れる（試験用）。検索結果にあってここに無い施設は取得しない（ログに出す）。ここにあって検索結果に無い施設は警告。
+BUNKYO_TARGET_FACILITIES = _env_list(
+    "BUNKYO_TARGET_FACILITIES", [name for group in BUNKYO_FACILITY_GROUPS for name in group]
+)
+
+# 施設ごとの部屋の絞り込み（施設名 → {"include": [...]} または {"exclude": [...]}。部屋名は完全一致）。
+# 除外した部屋のセルは時間帯別への選択対象にもしない（リクエストを減らすため）。
+BUNKYO_ROOM_RULES: dict[str, dict[str, list[str]]] = {
+    # ユーザー決定: ホールのみ（ホール＋スタジオ・３階会議室・４階会議室は対象外）
+    "不忍通りふれあい館": {"include": ["ホール"]},
+}
 
 # 「洋室Ａ＋Ｂ」のような合体室（名前に＋を含む部屋）を除外するか。既定は含める（別の部屋として扱う）。
 BUNKYO_EXCLUDE_COMBINED_ROOMS = os.environ.get("BUNKYO_EXCLUDE_COMBINED_ROOMS", "") == "1"
 
+# 輪番: 施設グループを BUNKYO_ROTATIONS 組に分け、1回の実行ではそのうち1組だけを取得する
+# （取得しない組の施設は、combine が前回データをそのまま引き継ぐ）。組の番号は UTC の日付と時刻から決める:
+#   (通算日 × 2 + (12時以降なら 1)) mod BUNKYO_ROTATIONS
+# 定期実行（UTC 01:00 / 13:00）で輪番2組なら、朝が 0 番・夜が 1 番になり、どの施設も1日1回更新される。
+# 手動実行などで番号を指定するときは BUNKYO_ROTATION_INDEX（0 始まり）。
+BUNKYO_ROTATIONS = max(1, int(os.environ.get("BUNKYO_ROTATIONS", "2") or 2))
+BUNKYO_ROTATION_INDEX = os.environ.get("BUNKYO_ROTATION_INDEX", "").strip()
+# グループを輪番に振り分けるときの見込み（施設ごとの「時間帯別で確認するセル数」の見込み。
+# = 部屋数 × 受付期間の平均日数 × 空き・一部空きの割合 0.55。受付期間は区の利用案内 5-3 から）。
+# 例: 福祉センター江戸川橋は 10部屋 × 75日 × 0.55 ≒ 413。リクエスト数はおおむねこの 1.15 倍＋グループごとに約40。
+BUNKYO_FACILITY_WEIGHTS: dict[str, int] = {
+    # 10部屋・2か月前の月の1日から。2026-10-05 の実測では空き・一部空きの割合が高く約550セル（約700リクエスト）
+    # だったが、この値のままにして「福祉センター江戸川橋＋大原・大塚」と「残り」の2組に分けている
+    # （上限 800 件で打ち切られるのが福祉センター江戸川橋の先の日付になるように。README 参照）
+    "福祉センター江戸川橋": 413,
+    "区民会議室": 37,            # 1部屋・2か月前の月の8日から
+    "シルバーセンター": 41,       # 1部屋・2か月前の月の1日から
+    "男女平等センター": 83,       # 2部屋・2か月前の月の1日から
+    "駒込地域活動センター": 112,  # ホールＡ・Ｂ・Ａ＋Ｂ・2か月前の月の8日から
+    "不忍通りふれあい館": 37,     # ホールのみ・2か月前の月の8日から
+    "元町多目的室": 21,           # 1部屋・1か月前の月の8日から
+    "汐見地域活動センター": 125,  # 6部屋（合体室含む）・1か月前の月の8日から
+    "向丘地域活動センター": 21,   # 1部屋・1か月前の月の8日から
+    "大原地域活動センター": 63,   # 3部屋・1か月前の月の8日から
+    "大塚地域活動センター": 63,   # 3部屋（合体室含む）・1か月前の月の8日から
+}
+BUNKYO_DEFAULT_FACILITY_WEIGHT = 60
+
 # 1セッション（Home からの1回の検索）で選ぶ施設数。重い照会を避けるため 1〜3 に制限。
+# （BUNKYO_FACILITY_GROUPS のグループもこの数を超えたら分割する）
 BUNKYO_FACILITIES_PER_SESSION = min(3, max(1, int(os.environ.get("BUNKYO_FACILITIES_PER_SESSION", "3"))))
 
 # 施設別空き状況の表示期間（1:1日 2:1週間 3:2週間）。1ヶ月(4)は重いので使わない。
@@ -121,18 +153,21 @@ if BUNKYO_DISPLAY_TERM not in ("1", "2", "3"):
 # 相手サーバーへの操作（画面遷移・データ取得）の間隔（秒）。3秒未満にはできない。
 BUNKYO_REQUEST_DELAY_SEC = max(3.0, float(os.environ.get("BUNKYO_REQUEST_DELAY_SEC", "3")))
 
-# 安全装置: 1回の実行で対象ホストへ送るリクエスト数の上限。ページ・XHR・自動の接続維持通信・
-# 静的ファイルをすべて数える（ブラウザのキャッシュから読んだだけでサーバーに届かないものは数えない）。
-# 上限に近づいたら（残り BUNKYO_REQUEST_RESERVE 件）取得を打ち切り、時間切れと同じ扱いで記録する。
-BUNKYO_MAX_REQUESTS = int(os.environ.get("BUNKYO_MAX_REQUESTS", "800"))
-BUNKYO_REQUEST_RESERVE = max(0, int(os.environ.get("BUNKYO_REQUEST_RESERVE", "10")))
+# 安全装置: 1回の実行で対象ホストへ送るリクエスト数の上限（承認済みの 800 件が上限。環境変数では下げることだけできる）。
+# ページ・XHR・自動の接続維持通信・静的ファイルをすべて数える（ブラウザのキャッシュから読んだだけで
+# サーバーに届かないものは数えない）。数え方は「CDP で見た送信数」と「ブラウザが発行した数 − キャッシュで
+# 済んだ数」の大きい方。上限に近づいたら（残り BUNKYO_REQUEST_RESERVE 件）取得を打ち切り、時間切れと同じ扱いで記録する。
+BUNKYO_MAX_REQUESTS_LIMIT = 800
+BUNKYO_MAX_REQUESTS = min(BUNKYO_MAX_REQUESTS_LIMIT, max(1, int(os.environ.get("BUNKYO_MAX_REQUESTS", "800") or 800)))
+BUNKYO_REQUEST_RESERVE = max(10, int(os.environ.get("BUNKYO_REQUEST_RESERVE", "10") or 10))
 
 # 安全装置: 5xx 応答・エラー画面への遷移などの失敗が、取得が進まないまま連続でこの回数に達したら
-# 実行全体を中止する（取得済み分は返す）。再試行の前には BUNKYO_RETRY_WAIT_SEC 秒（30秒以上）待つ。
-BUNKYO_MAX_CONSECUTIVE_ERRORS = max(1, int(os.environ.get("BUNKYO_MAX_CONSECUTIVE_ERRORS", "3")))
+# 実行全体を中止する（取得済み分は返す。3回が上限で、環境変数では下げることだけできる）。
+# 再試行の前には BUNKYO_RETRY_WAIT_SEC 秒（30秒以上）待つ。
+BUNKYO_MAX_CONSECUTIVE_ERRORS = min(3, max(1, int(os.environ.get("BUNKYO_MAX_CONSECUTIVE_ERRORS", "3") or 3)))
 BUNKYO_RETRY_WAIT_SEC = max(30.0, float(os.environ.get("BUNKYO_RETRY_WAIT_SEC", "30")))
 
-# 試験用の絞り込み（本番は未設定＝制限なし）。施設数（許可リストに合った施設のコード順の先頭から）と、
+# 試験用の絞り込み（本番は未設定＝制限なし）。施設数（今回の輪番の施設の先頭から）と、
 # 表示期間の数（BUNKYO_MAX_PERIODS=1 なら今日から2週間分だけ）。
 BUNKYO_MAX_FACILITIES = int(os.environ.get("BUNKYO_MAX_FACILITIES", "0") or 0)
 BUNKYO_MAX_PERIODS = int(os.environ.get("BUNKYO_MAX_PERIODS", "0") or 0)

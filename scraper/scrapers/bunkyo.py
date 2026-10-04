@@ -8,7 +8,8 @@ Playwright で画面を順に操作し、データは画面が受け取る XHR �
 取得の流れ（2026-10 実地確認）:
   /user/Home ─[利用目的から探す: 体操・ダンス → ダンス(40) → 検索]→
   施設選択（AvailabilityCheckApplySelectFacility）
-    許可リスト（config.BUNKYO_TARGET_FACILITIES）の施設をコード順に並べ、3施設ずつのグループにする。
+    許可リストの施設を config.BUNKYO_FACILITY_GROUPS のグループ（3施設まで）に分け、グループを輪番の組
+    （既定2組）に振り分けて、今回の組のグループだけを取得する（輪番は UTC の日付・時刻で決まる）。
     グループごとに Home から検索し直す。
     ─[グループの施設を選択 → 次へ進む]→
   施設別空き状況（AvailabilityCheckApplySelectDays）: 部屋×日付のグリッド（GetAvailability 等の JSON）
@@ -17,13 +18,15 @@ Playwright で画面を順に操作し、データは画面が受け取る XHR �
     ─[前に戻る]→ グリッド（選択が残るので解除）→ 次の10件 … → [次の期間] で2週間進む
 
 時間帯別で Status が "vacant"（空きあり）のコマだけを Slot にする（施設に問合せ・抽選・申込期間外は含めない）。
+部屋は config.BUNKYO_ROOM_RULES で施設ごとに絞り込む（対象外の部屋のセルは時間帯別への選択対象にもしない）。
+表示した2週間の対象セルがすべて申込期間外なら、そのグループの以降の期間は確認しない（受付期間は連続しているため）。
 
 運用条件（robots.txt が `Disallow: /*` のため、ユーザーが承認した控えめな条件。config.py 参照）:
   - 相手サーバーへの操作（画面遷移・データ取得）は、前の操作の完了から BUNKYO_REQUEST_DELAY_SEC（3秒以上）空ける
   - 並列1本（supports_shard=False。分割すると同時セッションが増えるため。施設の分け方自体は
     shard_items() で書いてあるので、承認を得て分割する場合は supports_shard を True にする）
   - 1セッションの照会は3施設・2週間表示まで
-  - 安全装置: 対象ホストへのリクエスト数が上限（BUNKYO_MAX_REQUESTS）に近づいたら打ち切る。
+  - 安全装置: 対象ホストへのリクエスト数が上限（BUNKYO_MAX_REQUESTS。800 が上限）に近づいたら打ち切る。
     失敗（5xx 応答・エラー画面・エラーのダイアログ・応答待ちのタイムアウト等）が取得の進まないまま
     BUNKYO_MAX_CONSECUTIVE_ERRORS 回続いたら実行全体を中止する（再試行の前は30秒以上待つ）。
     どちらも取得済みの分は返し、時間切れと同じ扱いで記録する（stop_early）。
@@ -31,13 +34,15 @@ Playwright で画面を順に操作し、データは画面が受け取る XHR �
   - Playwright の route() は使わない（route を使うとブラウザの HTTP キャッシュが無効になり、静的ファイルを
     画面ごとに取り直して相手の負荷が増えるため）。Google Analytics / Tag Manager への送信だけ CDP で止める。
 
-リクエスト数の数え方: 対象ホスト宛てにブラウザが発行したリクエスト（ページ・XHR・接続維持・静的ファイルの
-すべて）から、ブラウザのキャッシュで済んでサーバーに届かなかったもの（CDP の requestServedFromCache）を
-除いた件数。CDP が使えない場合は、キャッシュで済んだものも含めた件数で数える（多めに数える側）。
+リクエスト数の数え方: 対象ホスト宛てのリクエスト（ページ・XHR・接続維持・静的ファイルのすべて）のうち、
+ブラウザのキャッシュで済んでサーバーに届かなかったもの（CDP の requestServedFromCache）を除いた件数。
+「CDP の送信数」と「ブラウザが発行した数 − キャッシュ分」の大きい方を使う。CDP が使えない場合は、
+キャッシュで済んだものも含めた件数で数える（多めに数える側）。
 
-取得範囲の記録: 担当施設名を set_assigned_facilities() に記録する。グループ（施設）ごとに全期間を取るので、
-全グループが最後まで取れたときだけ completed_until を記録する（途中で打ち切った場合は記録せず、
-combine が担当施設の全期間を前回データで補う。同じ枠は今回取得分が優先される）。
+取得範囲の記録: 今回取得する施設を set_assigned_facilities()、輪番で今回は取得しない施設を
+set_carry_over_facilities()（combine が前回データをそのまま引き継ぐ）に記録する。グループごとに全期間を
+取るので、施設ごとの完了日を mark_facility_completed_until() に記録し（打ち切り時は combine が施設単位で
+補う）、全グループが最後まで取れたときだけ completed_until を記録する。
 """
 from __future__ import annotations
 
@@ -295,19 +300,37 @@ class BunkyoScraper(WardScraper):
             _warn(f"許可リストの施設が検索結果にありません（名称の変更・利用目的の設定変更の可能性）: {'、'.join(missing)}")
         if others:
             print(f"[bunkyo] 許可リストに無いので取得しない施設 {len(others)} 件: {'、'.join(others)}")
-        targets = sorted((code, name) for code, name in found if name in allow)
+        targets = [n for n in allow if n in by_name]
         if not targets:
             raise SetupError("許可リストの施設が検索結果に1つもありません（config.BUNKYO_TARGET_FACILITIES を確認してください）")
-        targets = self.shard_items(targets)
+
+        # 輪番: グループを組に振り分け、今回の組だけを取得する
+        rotations = plan_rotations(targets, config.BUNKYO_ROTATIONS)
+        index = rotation_index(config.BUNKYO_ROTATIONS)
+        for r, rot in enumerate(rotations):
+            mark = "（今回）" if r == index else ""
+            names = " / ".join("・".join(grp) for grp in rot) or "なし"
+            print(f"[bunkyo] 輪番 {r}{mark}: 見込み {_rotation_weight(rot)}（{names}）")
+        # 見込みの小さいグループから取る（リクエスト上限で打ち切られても、最後まで取れる施設が多くなるように。
+        # 打ち切られるのは見込みの大きいグループの先の日付になる）
+        chosen = self.shard_items(sorted(rotations[index], key=lambda grp: _rotation_weight([grp])))
+        mine = [name for grp in chosen for name in grp]
         if self._max_facilities:
-            targets = targets[: self._max_facilities]
-        self.set_assigned_facilities(name for _code, name in targets)
-        size = config.BUNKYO_FACILITIES_PER_SESSION
+            mine = mine[: self._max_facilities]
+            chosen = [[n for n in grp if n in mine] for grp in chosen]
+            chosen = [grp for grp in chosen if grp]
+        self.set_assigned_facilities(mine)
+        self.set_carry_over_facilities(n for n in targets if n not in mine)
+        for name in mine:
+            self.mark_facility_completed_until(name, None)
         groups = [
-            _Group(index=n + 1, facilities=targets[i : i + size], resume_from=self._date_from)
-            for n, i in enumerate(range(0, len(targets), size))
+            _Group(index=n + 1, facilities=[(by_name[name], name) for name in grp], resume_from=self._date_from)
+            for n, grp in enumerate(chosen)
         ]
-        print(f"[bunkyo] 対象 {len(targets)} 施設 / {len(groups)} グループ（1グループ {size} 施設まで）")
+        print(
+            f"[bunkyo] 今回の輪番 {index}/{config.BUNKYO_ROTATIONS}: {len(mine)} 施設・{len(groups)} グループを取得"
+            f"（前回データを引き継ぐ施設 {len(targets) - len(mine)}）"
+        )
         for g in groups:
             print(f"[bunkyo]   G{g.index}: {g.names}")
         return groups
@@ -329,9 +352,7 @@ class BunkyoScraper(WardScraper):
             self._search(page)
         self._select_facilities(page, [code for code, _name in g.facilities])
         grid = self._open_grid(page, g, term)
-        for fac in grid:
-            rooms = "・".join(_norm(r.get("ObjectName") or "") for r in fac.get("Rows") or [])
-            print(f"[bunkyo] G{g.index} 部屋: {_norm(fac.get('FacilityName') or '')}（{rooms}）")
+        self._print_rooms(g, grid)
         prev_last: dt.date | None = None
         while True:
             dates = _grid_dates(grid)
@@ -345,7 +366,16 @@ class BunkyoScraper(WardScraper):
             grid = self._drill_period(page, grid, label, until, final, out)
             g.done_until = min(last, until)
             g.resume_from = last + dt.timedelta(days=1)
+            for _code, name in g.facilities:
+                self.mark_facility_completed_until(name, g.done_until)
             self._progress()
+            if not final and _out_of_window(grid, self._date_from, until, self._room_allowed):
+                # 受付期間はどの施設も「今日から先の連続した期間」なので、2週間すべてが申込期間外なら以降も同じ
+                print(f"[bunkyo] {label}: すべて申込期間外のため、このグループの以降の期間は確認しません")
+                g.done_until = until
+                for _code, name in g.facilities:
+                    self.mark_facility_completed_until(name, until)
+                final = True
             if final:
                 break
             prev_last = last
@@ -505,10 +535,11 @@ class BunkyoScraper(WardScraper):
     def _candidates(self, grid: list[dict], until: dt.date, done: set[tuple]) -> list[_Cell]:
         cells: list[_Cell] = []
         for i, fac in enumerate(grid):
+            facility = _norm(fac.get("FacilityName") or "")
             for j, row in enumerate(fac.get("Rows") or []):
                 room = _norm(row.get("ObjectName") or "")
-                if config.BUNKYO_EXCLUDE_COMBINED_ROOMS and _is_combined(room):
-                    continue
+                if not self._room_allowed(facility, room):
+                    continue  # 対象外の部屋は時間帯別への選択対象にもしない
                 for k, cell in enumerate(row.get("Cells") or []):
                     status = str(cell.get("Status") or "")
                     if status not in KNOWN_GRID_STATUSES:
@@ -581,6 +612,8 @@ class BunkyoScraper(WardScraper):
                     d = _date(place.get("UseDate") or table.get("UseDate"))
                     if not facility or not room or d is None or not (self._date_from <= d <= until):
                         continue
+                    if not self._room_allowed(facility, room):
+                        continue
                     for cell in place.get("Cells") or []:
                         status = str(cell.get("Status") or "")
                         if status not in KNOWN_TIME_STATUSES:
@@ -597,6 +630,33 @@ class BunkyoScraper(WardScraper):
         if shown != len(batch):
             print(f"[bunkyo] {what}: 時間帯別の表示件数が選んだセル数と違います（表示 {shown} / 選択 {len(batch)}）")
         return slots
+
+    def _room_allowed(self, facility: str, room: str) -> bool:
+        """部屋が取得対象か（config.BUNKYO_ROOM_RULES と合体室の設定）。"""
+        if config.BUNKYO_EXCLUDE_COMBINED_ROOMS and _is_combined(room):
+            return False
+        rule = config.BUNKYO_ROOM_RULES.get(facility) or {}
+        if "include" in rule and room not in {_norm(r) for r in rule["include"]}:
+            return False
+        if room in {_norm(r) for r in rule.get("exclude", [])}:
+            return False
+        return True
+
+    def _print_rooms(self, g: _Group, grid: list[dict]) -> None:
+        """施設ごとの部屋（対象／対象外）をログに出し、部屋の絞り込みの名前が画面に無ければ警告する。"""
+        for fac in grid:
+            facility = _norm(fac.get("FacilityName") or "")
+            rooms = [_norm(r.get("ObjectName") or "") for r in fac.get("Rows") or []]
+            used = [r for r in rooms if self._room_allowed(facility, r)]
+            skipped = [r for r in rooms if r not in used]
+            extra = f" / 対象外: {'・'.join(skipped)}" if skipped else ""
+            print(f"[bunkyo] G{g.index} 部屋: {facility}（{'・'.join(used) or 'なし'}{extra}）")
+            rule = config.BUNKYO_ROOM_RULES.get(facility) or {}
+            unknown = [r for r in rule.get("include", []) + rule.get("exclude", []) if _norm(r) not in rooms]
+            if unknown:
+                _warn(f"{facility}: 部屋の絞り込み（config.BUNKYO_ROOM_RULES）にある部屋が画面にありません: {'、'.join(unknown)}")
+            if not used:
+                _warn(f"{facility}: 対象の部屋が1つもありません（部屋名の変更の可能性）")
 
     # --- 操作の共通処理（待機・上限・異常の検出） --------------------------
 
@@ -656,6 +716,8 @@ class BunkyoScraper(WardScraper):
         """done() が真になるまで待つ。エラー画面・エラーのダイアログ・5xx・タイムアウトは SiteError。"""
         limit = time.monotonic() + timeout_ms / 1000
         while True:
+            if self.timed_out and self.stop_reason:
+                raise _StopRun()  # 打ち切りの要求（stop_early）は待たずに反映する
             self._raise_if_http_error(what)
             if urlparse(page.url).path.rstrip("/").endswith("/Error"):
                 raise SiteError(f"{what}: エラー画面に遷移しました（{page.url}）")
@@ -800,10 +862,15 @@ class BunkyoScraper(WardScraper):
         return page
 
     def _requests_sent(self) -> int:
-        """対象ホストへ送ったリクエスト数（安全装置の判定に使う）。"""
+        """対象ホストへ送ったリクエスト数（安全装置の判定に使う）。
+
+        「CDP で見た送信数（キャッシュで済んだ分を除く）」と「ブラウザが発行した数 − キャッシュで済んだ数」の
+        大きい方。CDP が使えなければ、ブラウザが発行した数（キャッシュ分も含む・多めに数える側）。
+        """
+        seen = sum(self._seen.values())
         if self._cdp_ok and not self._cdp_failed:
-            return sum(self._sent.values())
-        return sum(self._seen.values())
+            return max(sum(self._sent.values()), seen - self._cache_hits)
+        return seen
 
     def _on_request(self, request) -> None:
         if _is_target(request.url):
@@ -851,7 +918,8 @@ class BunkyoScraper(WardScraper):
         basis = "CDP" if self._cdp_ok and not self._cdp_failed else "キャッシュ分も含む"
         sent = self._sent if basis == "CDP" else self._seen
         print(
-            f"[bunkyo] 通信のまとめ: 対象ホストへ送信 {self._requests_sent()} 件（{basis}。"
+            f"[bunkyo] 通信のまとめ: 対象ホストへ送信 {self._requests_sent()} 件（{basis}・CDP の送信数 "
+            f"{sum(self._sent.values())} と ブラウザ発行数−キャッシュ分 {sum(self._seen.values()) - self._cache_hits} の大きい方。"
             f"ページ {sent['document']} / データ {sent['xhr']} / 接続維持 {sent['ping']} / 静的ファイル {sent['static']}）"
             f"、キャッシュで済んだもの {self._cache_hits} 件、ブラウザが発行した総数 {sum(self._seen.values())} 件、"
             f"操作 {self._ops} 回、5xx 応答 {len(self._http_errors)} 件、失敗 {self._failures} 回、"
@@ -898,6 +966,69 @@ def _kind(url: str, resource_type: str | None) -> str:
     if t in ("xhr", "fetch"):
         return "xhr"
     return "static"
+
+
+def _out_of_window(grid: list[dict], date_from: dt.date, until: dt.date, allowed) -> bool:
+    """表示中の期間の対象セル（今日より後）がすべて「申込期間外」（と休館）か。対象セルが無ければ False。"""
+    statuses = []
+    for fac in grid:
+        facility = _norm(fac.get("FacilityName") or "")
+        for row in fac.get("Rows") or []:
+            if not allowed(facility, _norm(row.get("ObjectName") or "")):
+                continue
+            for cell in row.get("Cells") or []:
+                d = _date(cell.get("UseDate"))
+                if d is not None and date_from < d <= until:
+                    statuses.append(str(cell.get("Status") or ""))
+    return bool(statuses) and "time-over" in statuses and all(x in ("time-over", "closed") for x in statuses)
+
+
+def plan_rotations(targets: list[str], count: int) -> list[list[list[str]]]:
+    """取得対象の施設を1セッションのグループ（config.BUNKYO_FACILITY_GROUPS）に分け、count 組の輪番に振り分ける。
+
+    グループに入っていない施設は、targets の順に3施設ずつの新しいグループにする。振り分けは見込み
+    （config.BUNKYO_FACILITY_WEIGHTS）の大きいグループから順に、その時点で見込みの合計が最も小さい組に入れる
+    （同じならグループの定義順・組の番号順。入力が同じなら毎回同じ結果になる）。
+    """
+    size = config.BUNKYO_FACILITIES_PER_SESSION
+    wanted = set(targets)
+    groups: list[list[str]] = []
+    placed: set[str] = set()
+    for grp in config.BUNKYO_FACILITY_GROUPS:
+        members = [n for n in (_norm(x) for x in grp) if n in wanted and n not in placed]
+        placed.update(members)
+        groups += [members[i : i + size] for i in range(0, len(members), size)]
+    rest = [n for n in targets if n not in placed]
+    groups += [rest[i : i + size] for i in range(0, len(rest), size)]
+    order = sorted(range(len(groups)), key=lambda i: (-_rotation_weight([groups[i]]), i))
+    rotations: list[list[int]] = [[] for _ in range(max(1, count))]
+    for i in order:
+        r = min(range(len(rotations)), key=lambda r: (_rotation_weight([groups[j] for j in rotations[r]]), r))
+        rotations[r].append(i)
+    # 組の中はグループの定義順に並べる（ログ・再現性のため）
+    return [[groups[i] for i in sorted(rot)] for rot in rotations]
+
+
+def _rotation_weight(groups: list[list[str]]) -> int:
+    weights = config.BUNKYO_FACILITY_WEIGHTS
+    return sum(weights.get(n, config.BUNKYO_DEFAULT_FACILITY_WEIGHT) for grp in groups for n in grp)
+
+
+def rotation_index(count: int, now: dt.datetime | None = None) -> int:
+    """今回取得する輪番の組の番号。BUNKYO_ROTATION_INDEX が指定されていればそれ（count で割った余り）。
+
+    指定が無ければ UTC の (通算日 × 2 + (12時以降なら 1)) mod count。定期実行（UTC 01:00 / 13:00）で
+    count=2 なら、朝の実行が 0 番・夜の実行が 1 番になる（どの施設も1日1回更新）。
+    """
+    count = max(1, count)
+    value = config.BUNKYO_ROTATION_INDEX
+    if value:
+        try:
+            return int(value) % count
+        except ValueError:
+            _warn(f"BUNKYO_ROTATION_INDEX が不正です（{value!r}）。日付と時刻から決めます")
+    now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
+    return (now.date().toordinal() * 2 + (1 if now.hour >= 12 else 0)) % count
 
 
 def _today_jst() -> dt.date:
