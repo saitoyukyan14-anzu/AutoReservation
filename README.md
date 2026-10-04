@@ -2,19 +2,19 @@
 
 けやきネット（世田谷区公共施設予約システム）で **用途「その他ダンス（音量大/小）」が使える
 集会施設**（区民センター・地区会館・区民集会所）の空き状況を定期取得し、
-**希望の日時・広さを複数候補入力して横断検索**できる静的サイトです。
+**希望の日時を複数候補入力して横断検索**できる静的サイトです。
 
 - **スクレイパー**（Python + Playwright）が GitHub Actions で定期実行 → JSON生成
 - **フロント**（Vite + React + TypeScript + Tailwind）が JSON を読み、検索UIを提供
 - **GitHub Pages** で配信（サーバー不要・無料）
-- **広さ／定員** は Google スプレッドシートで手動管理し、空き状況に結合して表示
+- **施設情報（施設紹介ページへのリンク等）** は `web/public/data/facilities.json` で手動管理し、空き状況に結合して表示
 
 ```
-Googleスプレッドシート(広さ) ─┐
+facilities.json(施設リンク・手動管理) ─┐
                               ▼
   GitHub Actions（1日2回 10時/22時）: けやきネット取得 → web/public/data/*.json をcommit
                               ▼
-  GitHub Pages: 静的サイトが JSON を読み込み、区/日時/広さで絞り込み表示
+  GitHub Pages: 静的サイトが JSON を読み込み、区/日時で絞り込み表示
 ```
 
 ## ディレクトリ構成
@@ -26,7 +26,6 @@ scraper/                 # Python スクレイパー
     setagaya.py          # けやきネット（世田谷区）
     __init__.py          # 有効スクレイパーのレジストリ
   config.py              # 設定（対象カテゴリ・出力先・取得日数 等）
-  facilities.py          # スプレッドシート(CSV)→ facilities.json
   models.py              # Slot / Facility データモデル
   main.py                # エントリポイント
 web/                     # フロント（Vite + React）
@@ -63,16 +62,21 @@ HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
 > ⚠️ 時間帯までのドリル取得は相手サーバーへのアクセスが多いため、`config.REQUEST_DELAY_SEC`
 > で間隔を空けています。低頻度（1日1回程度）の利用にとどめてください。
 
-## 広さデータベース（Google スプレッドシート）
+## 施設情報（facilities.json）
 
-1. スプレッドシートに次の列を用意（日本語ヘッダ可）:
-   `区, 施設, 部屋, 面積, 定員, 備考`（= `ward, facility, room, area_sqm, capacity, note`）
-2. 「ファイル > 共有 > ウェブに公開」で **CSV** のリンクを取得
-3. そのURLを GitHub リポジトリの Secrets に `FACILITIES_SHEET_CSV_URL` として登録
-   （未設定なら `web/public/data/facilities.json` を手動編集して使うことも可能）
+`web/public/data/facilities.json` を直接編集して管理します（スクレイパーは書き換えません）。
+1行＝1施設で、空き状況とは `ward + facility`（区名＋施設名）で突合します。
 
-`区 + 施設 + 部屋` をキーに空き状況と結合されます。定員はけやきネット側にも載るため、
-スプレッドシートでは主に **面積（㎡）** を埋めれば十分です。
+```json
+{
+  "facilities": [
+    { "ward": "世田谷区", "facility": "桜丘区民センター", "url": "https://…", "note": "" }
+  ]
+}
+```
+
+- `facility` は空き状況（`availability.json`）に出てくる施設名と**完全一致**させる
+- `url` は区公式等の施設紹介ページ。不明なら `null`
 
 ## デプロイ（GitHub Pages）
 

@@ -26,20 +26,18 @@ class Slot:
 
 @dataclass
 class Facility:
-    """広さデータベースの1行（スプレッドシートで手動管理する内容）。
+    """施設情報 `web/public/data/facilities.json` の1行（手動管理・施設単位）。
 
-    空き状況とは `ward` + `facility` + `room` で突合する。
+    空き状況とは `ward` + `facility` で突合する（部屋単位ではない）。
     """
 
     ward: str
     facility: str
-    room: str
-    area_sqm: Optional[float] = None   # 面積（㎡）
-    capacity: Optional[int] = None     # 定員（人）
+    url: Optional[str] = None   # 施設紹介ページ（区公式等）のURL
     note: str = ""
 
-    def key(self) -> tuple[str, str, str]:
-        return (self.ward, self.facility, self.room)
+    def key(self) -> tuple[str, str]:
+        return (self.ward, self.facility)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -15,7 +15,6 @@ import sys
 import traceback
 
 import config
-import facilities as facilities_mod
 from scrapers import ALL_SCRAPERS
 
 
@@ -78,7 +77,6 @@ def run_scrape(months_ahead: int, shard_index: int, shard_count: int) -> int:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(f"[main] {len(all_slots)} 件を {config.AVAILABILITY_JSON.name} に書き出しました。")
-        facilities_mod.build_facilities_json()
     return errors
 
 
@@ -111,7 +109,6 @@ def run_combine() -> int:
     config.AVAILABILITY_JSON.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    facilities_mod.build_facilities_json()
     for p in parts:  # 中間ファイルは掃除
         p.unlink()
     return 0

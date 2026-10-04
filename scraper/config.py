@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "web" / "public" / "data"
 
 AVAILABILITY_JSON = DATA_DIR / "availability.json"
+# 施設情報（リンク等）は facilities.json を直接編集して管理する（スクレイパーは書き換えない）
 FACILITIES_JSON = DATA_DIR / "facilities.json"
 
 # 取得対象期間：今日から「Nヶ月先の末日」まで取得する。
@@ -27,11 +28,6 @@ SETAGAYA_PURPOSES = os.environ.get("SETAGAYA_PURPOSES", "131,136").split(",")
 # 区民センター/地区会館/区民集会所のみ。小学校・中学校・運動場等は除外。
 SETAGAYA_TARGET_KEYWORDS = ["区民センター", "地区会館", "集会所"]
 SETAGAYA_EXCLUDE_KEYWORDS = ["小学校", "中学校"]
-
-# 広さデータベース（Googleスプレッドシート）のCSV公開URL。
-# 「ファイル > 共有 > ウェブに公開」で取得したCSVリンクを環境変数で渡す。
-# 未設定なら data/facilities.json をそのまま使う（手動編集モード）。
-FACILITIES_SHEET_CSV_URL = os.environ.get("FACILITIES_SHEET_CSV_URL", "").strip()
 
 # Playwright をヘッドレスで動かすか（デバッグ時は HEADFUL=1 で画面表示）
 HEADLESS = os.environ.get("HEADFUL", "") != "1"
