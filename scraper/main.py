@@ -327,12 +327,16 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
                 n = add(fill)
                 facs = sorted({s["facility"] for s in fill})
                 which = "区の全施設" if not covered else "今回どの shard の担当にも含まれない施設"
-                detail = f": {_names(facs)}" if facs else "（補える前回データはありませんでした）"
-                _warn("combine", f"{tag}: shard {holes} の結果がありません（{ok}/{expected}）。{which}（{len(facs)} 施設）の枠 {n} 件を既存の {src}（前回データ）から補いました。今回は取得していない古いデータです（shard が欠け続けると補完も続きます）{detail}")
+                if facs:
+                    _warn("combine", f"{tag}: shard {holes} の結果がありません（{ok}/{expected}）。{which}（{len(facs)} 施設）の枠 {n} 件を既存の {src}（前回データ）から補いました。今回は取得していない古いデータです（shard が欠け続けると補完も続きます）: {_names(facs)}")
+                else:
+                    _warn("combine", f"{tag}: shard {holes} の結果がありません（{ok}/{expected}）。{which}について既存の {src} に補える前回データはありませんでした。該当 shard の施設は今回の結果に含まれません。")
         elif not opaque:
             # 全 shard がそろった区：前回データにしか無い施設は引き継がない（残り続けないように）
             gone = sorted({s["facility"] for s in old_slots(name)} - covered)
-            if gone:
+            if not covered:
+                _warn("combine", f"{tag}: 全 shard がそろっていますが担当施設が0件でした（サイト変更などで施設を選べなかった可能性があります）。この区の枠は0件になります。")
+            elif gone:
                 print(f"[combine] {tag}: 今回どの shard の担当にも無い {len(gone)} 施設は前回データから引き継ぎません: {_names(gone)}")
 
         # 時間切れの part は、担当施設の completed_until より後の日付を補う
@@ -344,14 +348,23 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
                 continue
             facs = coverage[i]
             until = _completed_until(d, f"{tag} shard {i}")
-            fill = [s for s in old_slots(name) if s["facility"] in facs and (until is None or s["date"] > until)]
+            # 打ち切られたウィンドウ内でも、今回取得できた（施設, 日付）には前回の枠を混ぜない
+            fetched = {(s["facility"], s["date"]) for s in d.get("slots", [])}
+            fill = [
+                s for s in old_slots(name)
+                if s["facility"] in facs
+                and (until is None or s["date"] > until)
+                and (s["facility"], s["date"]) not in fetched
+            ]
             n = add(fill)
+            filled = sorted({s["facility"] for s in fill})
             if until is None:
                 what = f"取得を完了した日がありません。担当 {len(facs)} 施設の全期間"
             else:
                 after = (dt.date.fromisoformat(until) + dt.timedelta(days=1)).isoformat()
                 what = f"{until} まで取得完了。担当 {len(facs)} 施設の {after} 以降"
-            _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。同じ枠は今回取得分を優先）。")
+            detail = f": {_names(filled)}" if filled else ""
+            _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。今回取得できた日は補っていません）{detail}")
 
     payload = {
         "updated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),

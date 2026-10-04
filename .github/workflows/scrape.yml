@@ -41,7 +41,7 @@ jobs:
         # ── 区を追加するときは、ここに行を追加する ────────────────────────────
         #   ward:   区キー（scraper/scrapers/<区>.py のクラスの `key`）
         #   shards: その区の分割数（supports_shard=False のスクレイパーは必ず 1）
-        #   shard:  0 〜 shards-1 を「すべて」1行ずつ並べる（欠けた shard の施設は取得されない）
+        #   shard:  0 〜 shards-1 を「すべて」1行ずつ並べる（欠けた shard の施設は前回データで補われ、更新されない）
         # 例) 文京区を分割なしで追加する場合:
         #   - { ward: bunkyo, shards: 1, shard: 0 }
         # 例) 新宿区を2分割で追加する場合:
@@ -84,8 +84,8 @@ jobs:
   # 全 part を結合し、コミット
   combine:
     needs: scrape
-    # 一部の区・shard が失敗しても結合する（part が1つも無い区は既存の availability.json から
-    # 引き継ぐ）。ワークフロー自体がキャンセルされた場合は結合しない。
+    # 一部の区・shard が失敗・時間切れでも結合する（欠けた区・shard の施設や、時間切れで取れなかった
+    # 日付は既存の availability.json から補う。詳細は README）。ワークフロー自体がキャンセルされた場合は結合しない。
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:

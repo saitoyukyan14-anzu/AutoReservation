@@ -113,7 +113,7 @@ python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
 | --- | --- |
 | 区の part が1つも無い（ジョブが全失敗・matrix 未登録） | その区の全施設 |
 | 一部の shard の part が無い（失敗）／取得開始前に時間切れ（担当施設不明・0件） | 今回どの part の担当施設にも含まれない施設 |
-| shard が時間切れで打ち切られた | その shard の担当施設の `completed_until` より後の日付（`null` なら全期間） |
+| shard が時間切れで打ち切られた | その shard の担当施設の `completed_until` より後の日付（`null` なら全期間）。ただし今回取得できた（施設, 日付）は補わない |
 | 担当施設を記録していない part（旧形式など）がある | 補わない（警告のみ。従来どおり） |
 
 補った場合は件数と施設名を警告（Actions では実行サマリーのアノテーション）に出します。補った分は
