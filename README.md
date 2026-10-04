@@ -62,7 +62,7 @@ HEADFUL=1 python scraper/main.py       # ブラウザを表示してデバッグ
 
 # 1区だけ取得（part ファイルを出力）→ 結合して availability.json に反映
 python scraper/main.py --ward setagaya
-python scraper/main.py --combine       # part が無い区は既存の availability.json から引き継ぐ
+python scraper/main.py --combine       # 取れなかった部分は既存の availability.json から補う
 
 # 1区を分割して取得（GitHub Actions の matrix と同じ動かし方）
 python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
@@ -73,7 +73,7 @@ python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
 | `--ward <区キー>` | その区だけ取得し `web/public/data/availability.part.<区キー>.<shard>.json` を出力（結合は `--combine`） |
 | `--shard-index` / `--shard-count` | 区内の施設を分割して担当分だけ取得。shard 非対応の区に `--shard-count 2` 以上を指定するとエラー |
 | `--time-budget-min N` | 時間予算（分、既定 330）。超えたらそこまでの取得分で打ち切って書き出す。0 以下で無制限 |
-| `--combine` | part ファイルを結合して `availability.json` を更新。part が1つも無い区は既存データを引き継ぎ、shard 欠け・時間切れは警告を出す |
+| `--combine` | part ファイルを結合して `availability.json` を更新。shard 欠け・時間切れで取れなかった部分は既存データから補い、警告を出す（下記） |
 
 > ⚠️ 時間帯までのドリル取得は相手サーバーへのアクセスが多いため、`config.REQUEST_DELAY_SEC`
 > で間隔を空けています。低頻度（1日1回程度）の利用にとどめてください。
@@ -103,8 +103,22 @@ python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
 `scrape.yml` は「区 × shard」ごとに1ジョブで並列取得し（世田谷区は5分割）、最後に `combine`
 ジョブが結合・コミットします。GitHub Actions は1ジョブ6時間が上限のため、各ジョブに
 `timeout-minutes: 350` を設定し、スクレイパー側も時間予算（`TIME_BUDGET_MIN`、既定 330 分）を
-過ぎたらそこまでの取得分で打ち切って結果を残します。一部の区のジョブが全て失敗しても、
-その区は前回のデータを引き継いで他の区だけ更新します。
+過ぎたらそこまでの取得分で打ち切って結果を残します。
+
+各 part には取得結果に加えて「その shard の担当施設名一覧（`facilities`）」と「全担当施設について
+取得を完了した最終日（`completed_until`）」が記録され、`combine` は取れなかった部分だけを
+前回の `availability.json` から補います（今日より前の枠は捨て、同じ枠は今回取得分を優先）。
+
+| 状況 | 前回データから補う範囲 |
+| --- | --- |
+| 区の part が1つも無い（ジョブが全失敗・matrix 未登録） | その区の全施設 |
+| 一部の shard の part が無い（失敗）／取得開始前に時間切れ（担当施設不明・0件） | 今回どの part の担当施設にも含まれない施設 |
+| shard が時間切れで打ち切られた | その shard の担当施設の `completed_until` より後の日付（`null` なら全期間） |
+| 担当施設を記録していない part（旧形式など）がある | 補わない（警告のみ。従来どおり） |
+
+補った場合は件数と施設名を警告（Actions では実行サマリーのアノテーション）に出します。補った分は
+今回取得していない古いデータなので、同じ警告が続く場合は失敗・打ち切りの原因を確認してください。
+全 shard がそろった区では、どの shard の担当にも無い施設（前回データにしか無い施設）は引き継ぎません。
 
 > ⚠️ スクレイピングは1回あたり数時間規模になり得ます。GitHub Actions の無料枠の都合上、
 > **Public（公開）リポジトリ**での運用を推奨します（Public は Actions 実行時間が無制限）。
@@ -118,6 +132,10 @@ python scraper/main.py --ward setagaya --shard-index 0 --shard-count 5
    - 1区を複数ジョブに分割したい場合は `supports_shard = True` にし、対象施設の一覧を
      全 shard で同じ順序に並べてから `self.shard_items(施設一覧)` で担当分だけ取得する
      （非対応のまま `--shard-count 2` 以上で動かすとエラーになり、重複取得を防ぐ）
+   - 担当施設が決まったら `self.set_assigned_facilities(施設名一覧)`（`Slot.facility` と同じ表記）を、
+     期間の区切りごとに「全担当施設についてその日まで取り終えた」ら `self.mark_completed_until(日付)`
+     を呼ぶ。`combine` が欠けた shard・時間切れで取れなかった部分を前回データから補うのに使う
+     （呼ばない場合は補完されず、従来どおり警告のみ）
    - `__init__` を独自に定義する場合は `shard_index` / `shard_count` / `deadline` を受け取り
      `super().__init__(...)` に渡す
 2. `scraper/scrapers/__init__.py` の `ALL_SCRAPERS` に追加

@@ -20,6 +20,8 @@
 並列化: 対象施設を shard で分割する（supports_shard=True）。
 時間予算: 期間ウィンドウ・日付バッチの区切りで self.out_of_time() を確認し、
           期限を過ぎたらそこまでの取得分を返して終了する。
+取得範囲の記録: 施設選択時に担当施設名（正規化後）を、期間ウィンドウを1つ取り終えるごとに
+          そのウィンドウの最終日を completed_until として記録する（combine での補完用）。
 """
 from __future__ import annotations
 
@@ -111,15 +113,16 @@ class SetagayaScraper(WardScraper):
                     if self.timed_out:
                         break
                     done_windows += 1
+                    # このウィンドウ（14日分）の全担当施設を取り終えた
+                    self.mark_completed_until(_window_last_day(windows[w], date_to))
             finally:
                 context.close()
                 browser.close()
         result = _dedupe(slots)
         if self.timed_out:
             covered = "完了したウィンドウなし"
-            if done_windows:
-                last = windows[0] + dt.timedelta(days=DAYS_PER_PAGE * done_windows - 1)
-                covered = f"{windows[0]}〜{min(last, date_to)} は完了"
+            if self.completed_until is not None:
+                covered = f"{windows[0]}〜{self.completed_until} は完了"
             print(
                 f"[setagaya] 時間切れで打ち切り: {done_windows}/{len(windows)} ウィンドウ"
                 f"（{covered}）、{len(result)} 件を返します。"
@@ -139,23 +142,30 @@ class SetagayaScraper(WardScraper):
         page.wait_for_url("**/WgR_ShisetsuKensaku", timeout=NAV_TIMEOUT)
 
     def _select_target_facilities(self, page: Page) -> int:
-        """区民センター/地区会館/区民集会所のうち、この shard が担当する施設を選択。"""
-        # 対象施設コードを収集（順序を安定させるためソート）
-        targets: list[str] = []
+        """区民センター/地区会館/区民集会所のうち、この shard が担当する施設を選択。
+
+        担当施設名（正規化後）を `set_assigned_facilities()` で記録する（combine での補完用）。
+        """
+        # 対象施設（コード, 施設名）を収集（順序を安定させるためコードでソート）
+        targets: list[tuple[str, str]] = []
         for cb in page.query_selector_all("input[name='checkShisetsu']"):
             code = cb.get_attribute("value")
             label = page.query_selector(f"label[for='checkShisetsu{code}']")
             name = label.inner_text().strip() if label else ""
             if _is_target(name):
-                targets.append(code)
-        targets.sort()
+                targets.append((code, name))
+        targets.sort(key=lambda t: t[0])
 
         # shard で分割（並列ジョブ間で重複なく分担）
         targets = self.shard_items(targets)
         if self._max_facilities is not None:
             targets = targets[: self._max_facilities]
 
-        for code in targets:
+        # 時間帯別ページの施設名(H3)と同じ正規化をかけて記録する。
+        # 表記がずれて H3 側にしか無い施設名は、combine が part の枠から拾って担当に含める。
+        self.set_assigned_facilities(self._facility_name(name) for _code, name in targets)
+
+        for code, _name in targets:
             self._ensure_checked(page, f"checkShisetsu{code}")
         self._pause(page)
         return len(targets)
@@ -255,11 +265,7 @@ class SetagayaScraper(WardScraper):
             if el.evaluate("e => e.tagName") == "H3":
                 text = el.inner_text().strip()
                 if text and "記号の見方" not in text:
-                    raw = re.sub(r"《.*?》", "", text).strip()
-                    facility = normalize_facility_name(raw)
-                    if facility != raw and raw not in self._renamed:
-                        self._renamed.add(raw)
-                        print(f"[setagaya] 施設名を正規化: {raw!r} → {facility!r}")
+                    facility = self._facility_name(text)
                 continue
             date = _find_date(el.inner_text())
             header = el.query_selector_all("tr:first-child th, tr:first-child td")
@@ -278,6 +284,15 @@ class SetagayaScraper(WardScraper):
         return slots
 
     # --- 共通ユーティリティ ---------------------------------------------
+
+    def _facility_name(self, text: str) -> str:
+        """画面上の施設名から《…》と付記を除いた施設名を返す（変わったものは1回だけログに出す）。"""
+        raw = re.sub(r"《.*?》", "", text).strip()
+        facility = normalize_facility_name(raw)
+        if facility != raw and raw not in self._renamed:
+            self._renamed.add(raw)
+            print(f"[setagaya] 施設名を正規化: {raw!r} → {facility!r}")
+        return facility
 
     def _load_all(self, page: Page, item_selector: str) -> None:
         """『さらに読み込む』を、件数が増えなくなる/ボタンが消えるまで押す。"""
@@ -354,6 +369,11 @@ def normalize_facility_name(name: str) -> str:
     if any(k in original for k in keywords) and not any(k in head for k in keywords):
         return original
     return head
+
+
+def _window_last_day(window_start: dt.date, date_to: dt.date) -> dt.date:
+    """期間ウィンドウ（1画面 DAYS_PER_PAGE 日）の最終日。取得期間の最終日で頭打ち。"""
+    return min(window_start + dt.timedelta(days=DAYS_PER_PAGE - 1), date_to)
 
 
 def _is_target(name: str) -> bool:

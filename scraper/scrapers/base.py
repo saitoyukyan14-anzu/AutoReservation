@@ -16,6 +16,18 @@
   それまでの取得分を返して終わる。長いループ（施設・期間・ページ等）の区切りで
   `self.out_of_time("どこで")` を確認し、True なら打ち切って取得済みの分を返すこと。
 
+- **取得範囲の記録**（`set_assigned_facilities()` / `mark_completed_until()`）
+  `main.py` は part ファイルに「この shard の担当施設名一覧」と「全担当施設について取得を
+  完了した最終日（completed_until）」を書き、`--combine` はそれを使って、欠けた shard の
+  施設や時間切れで取れなかった後半の日付を前回データから補う。
+  - 担当施設が決まった時点（shard で分割した直後）で `self.set_assigned_facilities(施設名一覧)`
+    を呼ぶ。施設名は出力する `Slot.facility` と同じ表記（正規化後）にすること。
+  - 期間ウィンドウ等の区切りで「全担当施設についてその日まで取得し終えた」ら
+    `self.mark_completed_until(その日)` を呼ぶ（日付は単調増加。後退はしない）。
+  - 呼ばなかった場合: 担当施設は「不明」（None）として記録され、combine はその part について
+    従来どおりの扱い（補完なし）になる。completed_until は、時間切れでなければ取得期間の
+    最終日、時間切れなら「完了日なし」（None）として記録される。
+
 サブクラスで `__init__` を定義する場合は、必ず `shard_index` / `shard_count` / `deadline`
 を受け取り `super().__init__(...)` に渡すこと。
 """
@@ -25,7 +37,7 @@ import datetime as dt
 import math
 import time
 from abc import ABC, abstractmethod
-from typing import Sequence, TypeVar
+from typing import Iterable, Sequence, TypeVar
 
 from models import Slot
 
@@ -67,6 +79,10 @@ class WardScraper(ABC):
         self.deadline = deadline
         #: 期限超過で打ち切ったか（main.py が part ファイルに記録する）
         self.timed_out = False
+        #: この shard の担当施設名（正規化後・Slot.facility と同じ表記）。None は「不明（未記録）」。
+        self.assigned_facilities: list[str] | None = None
+        #: 全担当施設について取得を完了した最終日。None は「1日も完了していない（未記録）」。
+        self.completed_until: dt.date | None = None
 
     # --- shard 分割 ---------------------------------------------------------
 
@@ -98,6 +114,20 @@ class WardScraper(ABC):
         at = f"（{where}）" if where else ""
         print(f"[{self.key or self.ward_name}] 時間切れで打ち切り{at}。ここまでの取得分を返します。")
         return True
+
+    # --- 取得範囲の記録（combine での補完に使う） ------------------------------
+
+    def set_assigned_facilities(self, names: Iterable[str]) -> None:
+        """この shard の担当施設名一覧を記録する（重複・空文字は除く）。
+
+        施設名は出力する `Slot.facility` と同じ表記（正規化後）にすること。
+        """
+        self.assigned_facilities = sorted({n for n in names if n})
+
+    def mark_completed_until(self, date: dt.date) -> None:
+        """全担当施設について date まで取得を完了したことを記録する（後退はしない）。"""
+        if self.completed_until is None or date > self.completed_until:
+            self.completed_until = date
 
     # --- 取得本体 -----------------------------------------------------------
 

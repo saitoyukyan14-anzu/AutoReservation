@@ -10,7 +10,12 @@
   # 時間予算（分）。過ぎたらそこまでの取得分で打ち切って書き出す（0 以下で無制限）:
   python scraper/main.py --ward setagaya --time-budget-min 330
 
-part ファイル名は `availability.part.<区キー>.<shard番号>.json`。
+part ファイル名は `availability.part.<区キー>.<shard番号>.json`。主なフィールド:
+  slots            取得した枠
+  timed_out        時間切れで打ち切ったか
+  facilities       この shard の担当施設名一覧（正規化後）。null は「不明」
+  completed_until  全担当施設について取得を完了した最終日。null は「完了した日なし」
+facilities キーが無い part は旧形式として扱う（combine での補完なし＝従来どおり）。
 """
 from __future__ import annotations
 
@@ -135,9 +140,17 @@ def run_scrape(
                 out.unlink()
             continue
         print(f"[main]   → {len(slots)} 件")
+        facilities = scraper.assigned_facilities
+        completed_until = scraper.completed_until
+        if completed_until is None and not scraper.timed_out:
+            # 記録しないスクレイパーでも、最後まで取得できたなら期間の最終日まで完了している
+            completed_until = date_to
         if scraper.timed_out:
             where = f"の shard {label} " if shard_count > 1 else ""
-            _warn("main", f"{scraper.ward_name}（{scraper.key}）{where}は時間切れで打ち切りました（{len(slots)} 件は取得済み）。")
+            done = f"{completed_until} まで取得完了" if completed_until else "取得を完了した日なし"
+            _warn("main", f"{scraper.ward_name}（{scraper.key}）{where}は時間切れで打ち切りました（{len(slots)} 件は取得済み・{done}）。")
+        if facilities is None and not (scraper.timed_out and not slots):
+            print(f"[main]   ※ {scraper.ward_name} は担当施設を記録していません（combine で欠けた shard・時間切れ分の補完ができません）。")
         _dump(out, {
             "updated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "date_from": date_from.isoformat(),
@@ -147,6 +160,8 @@ def run_scrape(
             "shard_index": shard_index,
             "shard_count": shard_count,
             "timed_out": scraper.timed_out,
+            "facilities": facilities,
+            "completed_until": completed_until.isoformat() if completed_until else None,
             "slots": [s.to_dict() for s in slots],
         })
         print(f"[main] {len(slots)} 件を {out.name} に書き出しました。")
@@ -169,12 +184,68 @@ def _load_existing_slots() -> list[dict]:
         return []
 
 
+def _part_kind(part: dict) -> str:
+    """part の種類。
+
+    - "known":   担当施設が記録されている → 欠けた shard・時間切れ分を補完できる
+    - "noinfo":  担当施設不明・時間切れ・0 件（取得開始前に期限超過など）→ part が無いものとして扱う
+    - "unknown": 担当施設不明（記録しないスクレイパー）→ 補完なし（従来どおり）
+    - "legacy":  旧形式（facilities キーが無い）→ 補完なし（従来どおり）
+    """
+    if "facilities" not in part:
+        return "legacy"
+    if isinstance(part["facilities"], list):
+        return "known"
+    if part.get("timed_out") and not part.get("slots"):
+        return "noinfo"
+    return "unknown"
+
+
+def _part_coverage(part: dict, tag: str) -> set[str]:
+    """known な part が担当した施設名の集合（担当施設一覧 ∪ 枠に出てくる施設名）。
+
+    施設選択画面と結果画面で施設名の表記がずれた場合でも、枠が取れた施設は担当に含める。
+    """
+    assigned = set(part["facilities"])
+    seen = {s["facility"] for s in part["slots"]}
+    extra = sorted(seen - assigned)
+    if extra:
+        _warn("combine", f"{tag} の枠に担当施設一覧に無い施設名があります（担当に含めて扱います）: {_names(extra)}")
+    return assigned | seen
+
+
+def _completed_until(part: dict, tag: str) -> str | None:
+    """part の completed_until（YYYY-MM-DD）。無い・不正なら None（完了日なし）。"""
+    value = part.get("completed_until")
+    if value is None:
+        return None
+    try:
+        return dt.date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError):
+        _warn("combine", f"{tag} の completed_until が不正です（完了日なしとして扱います）: {value!r}")
+        return None
+
+
+def _names(names: list[str], limit: int = 10) -> str:
+    shown = "、".join(names[:limit])
+    return shown + (f" ほか {len(names) - limit} 施設" if len(names) > limit else "")
+
+
 def run_combine(part_paths: list[Path] | None = None) -> int:
     """part ファイルを1つの availability.json に結合する。
 
-    - part が1つも無い区（その区のジョブが全失敗、または matrix 未登録）は、既存の
-      availability.json からその区の slots を引き継ぐ（区のデータが丸ごと消えるのを防ぐ）。
-    - shard の一部が欠けている区・時間切れで打ち切られた区は警告を出す（データはあるものだけ使う）。
+    区ごとに、今回取得できなかった部分を既存の availability.json（前回データ）から補う
+    （いずれも date_from より前の枠は捨てる。同じ枠は今回取得分を優先）:
+
+    - part が1つも無い区（ジョブが全失敗、または matrix 未登録）は、その区の枠をすべて引き継ぐ。
+    - shard が欠けた区は、今回どの part の担当施設にも含まれない施設の枠を引き継ぐ。
+      取得開始前に時間切れになった part（担当施設不明・0 件）も「欠けた shard」として扱う。
+    - 時間切れの part は、その担当施設の枠のうち completed_until より後の日付を引き継ぐ
+      （completed_until が null なら担当施設の全期間）。
+    - 旧形式・担当施設不明の part は補完せず警告だけ出す（従来どおり）。その part がある区では
+      欠けた shard の補完もしない（どの施設が欠けたのか判断できないため）。
+    - 全 shard がそろった区では、どの part の担当にも無い施設（前回データにしか無い施設）は
+      引き継がない。
 
     part_paths を省略すると DATA_DIR の `availability.part.*.json` をすべて結合する。
     """
@@ -205,33 +276,82 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
         by_ward[ward_key].append(data)
         date_from = min(date_from, data["date_from"]) if date_from else data["date_from"]
         date_to = max(date_to, data["date_to"]) if date_to else data["date_to"]
-        add(data["slots"])
+        add(data["slots"])  # 今回取得分を先に入れる（引き継ぎ分と重なったら今回分が残る）
     print(f"[combine] {len(parts)} ファイル（{', '.join(sorted(by_ward))}）→ {len(slots)} 件")
 
     registry = _registry()
+    src = config.AVAILABILITY_JSON.name
+    existing: list[dict] | None = None
 
-    # 区ごとの完全性チェック（shard 欠け・時間切れ）
-    for ward_key, items in sorted(by_ward.items()):
-        name = items[0].get("ward") or ward_key
-        expected = max(int(d.get("shard_count", 1)) for d in items)
-        got = {int(d.get("shard_index", 0)) for d in items}
-        missing = [i for i in range(expected) if i not in got]
-        if missing:
-            _warn("combine", f"{name}（{ward_key}）: shard {missing} の part がありません（{len(got)}/{expected}）。該当 shard の施設は今回の結果に含まれません。")
-        cut = sorted(int(d.get("shard_index", 0)) for d in items if d.get("timed_out"))
-        if cut:
-            _warn("combine", f"{name}（{ward_key}）: shard {cut} は時間切れで打ち切られています（期間の後半が欠けている可能性があります）。")
-        if ward_key not in registry:
+    def old_slots(ward_name: str) -> list[dict]:
+        """既存データのうち、その区の date_from 以降の枠（過去日付は捨てる）。"""
+        nonlocal existing
+        if existing is None:
+            existing = _load_existing_slots()
+        return [s for s in existing if s.get("ward") == ward_name and s.get("date", "") >= date_from]
+
+    for ward_key in sorted(set(registry) | set(by_ward)):
+        items = sorted(by_ward.get(ward_key, []), key=lambda d: int(d.get("shard_index", 0)))
+        cls = registry.get(ward_key)
+        name = (items[0].get("ward") if items else None) or (cls.ward_name if cls else ward_key)
+        tag = f"{name}（{ward_key}）"
+        if cls is None:
             _warn("combine", f"part の区キー {ward_key!r} はスクレイパーに登録されていません（データはそのまま結合します）。")
 
-    # part が1つも無い区は既存データを引き継ぐ（過去日付の枠は除く）
-    missing_wards = [cls for key, cls in registry.items() if key not in by_ward]
-    if missing_wards:
-        existing = _load_existing_slots()
-        for cls in missing_wards:
-            old = [s for s in existing if s.get("ward") == cls.ward_name and s.get("date", "") >= date_from]
-            n = add(old)
-            _warn("combine", f"{cls.ward_name}（{cls.key}）の part が1つもありません（ジョブが全失敗、または scrape.yml の matrix に未登録）。既存の {config.AVAILABILITY_JSON.name} から {n} 件を引き継ぎます。")
+        # part が1つも無い区は、その区の枠をすべて引き継ぐ
+        if not items:
+            n = add(old_slots(name))
+            _warn("combine", f"{tag} の part が1つもありません（ジョブが全失敗、または scrape.yml の matrix に未登録）。既存の {src} から {n} 件を引き継ぎます。")
+            continue
+
+        expected = max(int(d.get("shard_count", 1)) for d in items)
+        kinds = [(int(d.get("shard_index", 0)), d, _part_kind(d)) for d in items]
+        got = {i for i, _d, _k in kinds}
+        missing = [i for i in range(expected) if i not in got]
+        noinfo = [i for i, _d, k in kinds if k == "noinfo"]
+        opaque = [i for i, _d, k in kinds if k in ("legacy", "unknown")]
+        coverage = {i: _part_coverage(d, f"{tag} shard {i}") for i, d, k in kinds if k == "known"}
+        covered: set[str] = set().union(*coverage.values())
+
+        if noinfo:
+            _warn("combine", f"{tag}: shard {noinfo} は取得開始前に時間切れになりました（担当施設不明・0 件）。part が無いものとして扱います。")
+
+        # 欠けた shard（part なし・取得開始前に時間切れ）の施設を補う
+        holes = sorted(missing + noinfo)
+        if holes:
+            ok = expected - len(holes)
+            if opaque:
+                _warn("combine", f"{tag}: shard {holes} の結果がありません（{ok}/{expected}）。担当施設がわからない part（shard {opaque}：旧形式など）があるため補完できません。該当 shard の施設は今回の結果に含まれません。")
+            else:
+                fill = [s for s in old_slots(name) if s["facility"] not in covered]
+                n = add(fill)
+                facs = sorted({s["facility"] for s in fill})
+                which = "区の全施設" if not covered else "今回どの shard の担当にも含まれない施設"
+                detail = f": {_names(facs)}" if facs else "（補える前回データはありませんでした）"
+                _warn("combine", f"{tag}: shard {holes} の結果がありません（{ok}/{expected}）。{which}（{len(facs)} 施設）の枠 {n} 件を既存の {src}（前回データ）から補いました。今回は取得していない古いデータです（shard が欠け続けると補完も続きます）{detail}")
+        elif not opaque:
+            # 全 shard がそろった区：前回データにしか無い施設は引き継がない（残り続けないように）
+            gone = sorted({s["facility"] for s in old_slots(name)} - covered)
+            if gone:
+                print(f"[combine] {tag}: 今回どの shard の担当にも無い {len(gone)} 施設は前回データから引き継ぎません: {_names(gone)}")
+
+        # 時間切れの part は、担当施設の completed_until より後の日付を補う
+        for i, d, kind in kinds:
+            if not d.get("timed_out") or kind == "noinfo":
+                continue
+            if kind != "known":
+                _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られています（期間の後半が欠けている可能性があります）。担当施設がわからない part（旧形式など）のため補完できません。")
+                continue
+            facs = coverage[i]
+            until = _completed_until(d, f"{tag} shard {i}")
+            fill = [s for s in old_slots(name) if s["facility"] in facs and (until is None or s["date"] > until)]
+            n = add(fill)
+            if until is None:
+                what = f"取得を完了した日がありません。担当 {len(facs)} 施設の全期間"
+            else:
+                after = (dt.date.fromisoformat(until) + dt.timedelta(days=1)).isoformat()
+                what = f"{until} まで取得完了。担当 {len(facs)} 施設の {after} 以降"
+            _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。同じ枠は今回取得分を優先）。")
 
     payload = {
         "updated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
