@@ -66,3 +66,77 @@ SHINJUKU_ONLY_ROOMS = [c.strip() for c in os.environ.get("SHINJUKU_ONLY_ROOMS", 
 SHINJUKU_MAX_WEEKS = int(os.environ.get("SHINJUKU_MAX_WEEKS", "0"))
 # 全リクエストの記録先（TSV。空なら記録しない）。試験・調査用
 SHINJUKU_REQUEST_LOG = os.environ.get("SHINJUKU_REQUEST_LOG", "")
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    """カンマ区切りの環境変数をリストにする（未設定・空なら default）。"""
+    items = [x.strip() for x in os.environ.get(name, "").split(",") if x.strip()]
+    return items or list(default)
+
+
+# ── 文京区「文の京」施設予約ねっと ─────────────────────────────────────────
+# robots.txt は `Disallow: /*`（許可は *.html と /*/Home のみ）で、空き照会の画面はクロール禁止に当たる。
+# ユーザーが承知の上で、次の控えめな条件での運用を承認している:
+#   1日1〜2回（scrape.yml の cron）／操作ごとに3秒以上待機／並列1本（shard 分割しない）／
+#   1セッションの照会は3施設・2週間表示まで。
+# 下の値のうち、この条件に関わるものは環境変数で緩められないよう上限・下限をかけている。
+
+# 「利用目的から探す」の分類と利用目的（HomeModel の value）。
+# 分類 3:体操・ダンス ／ 利用目的 40:ダンス（41:バレエ 37:体操・ストレッチ 39:ヨガ・ピラティス）
+BUNKYO_PURPOSE_CATEGORY = os.environ.get("BUNKYO_PURPOSE_CATEGORY", "3")
+BUNKYO_PURPOSES = _env_list("BUNKYO_PURPOSES", ["40"])
+
+# 取得対象の施設名（許可リスト。施設選択画面の表記と完全一致）。ユーザー承認済みの B案（14施設）。
+# 検索結果にあってここに無い施設は取得しない（ログに出す）。ここにあって検索結果に無い施設は警告を出す。
+BUNKYO_TARGET_FACILITIES = _env_list("BUNKYO_TARGET_FACILITIES", [
+    # 地域の集会施設（A案）
+    "区民会議室",
+    "大原地域活動センター",
+    "大塚地域活動センター",
+    "向丘地域活動センター",
+    "汐見地域活動センター",
+    "駒込地域活動センター",
+    "元町多目的室",
+    "目白台交流館",
+    "不忍通りふれあい館",
+    # 目的が決まった集会施設（B案で追加）
+    "シルバーセンター",
+    "男女平等センター",
+    "福祉センター江戸川橋",
+    "松聲閣集会室",
+    "勤労福祉会館",
+])
+
+# 「洋室Ａ＋Ｂ」のような合体室（名前に＋を含む部屋）を除外するか。既定は含める（別の部屋として扱う）。
+BUNKYO_EXCLUDE_COMBINED_ROOMS = os.environ.get("BUNKYO_EXCLUDE_COMBINED_ROOMS", "") == "1"
+
+# 1セッション（Home からの1回の検索）で選ぶ施設数。重い照会を避けるため 1〜3 に制限。
+BUNKYO_FACILITIES_PER_SESSION = min(3, max(1, int(os.environ.get("BUNKYO_FACILITIES_PER_SESSION", "3"))))
+
+# 施設別空き状況の表示期間（1:1日 2:1週間 3:2週間）。1ヶ月(4)は重いので使わない。
+BUNKYO_DISPLAY_TERM = os.environ.get("BUNKYO_DISPLAY_TERM", "3")
+if BUNKYO_DISPLAY_TERM not in ("1", "2", "3"):
+    BUNKYO_DISPLAY_TERM = "3"
+
+# 相手サーバーへの操作（画面遷移・データ取得）の間隔（秒）。3秒未満にはできない。
+BUNKYO_REQUEST_DELAY_SEC = max(3.0, float(os.environ.get("BUNKYO_REQUEST_DELAY_SEC", "3")))
+
+# 安全装置: 1回の実行で対象ホストへ送るリクエスト数の上限。ページ・XHR・自動の接続維持通信・
+# 静的ファイルをすべて数える（ブラウザのキャッシュから読んだだけでサーバーに届かないものは数えない）。
+# 上限に近づいたら（残り BUNKYO_REQUEST_RESERVE 件）取得を打ち切り、時間切れと同じ扱いで記録する。
+BUNKYO_MAX_REQUESTS = int(os.environ.get("BUNKYO_MAX_REQUESTS", "800"))
+BUNKYO_REQUEST_RESERVE = max(0, int(os.environ.get("BUNKYO_REQUEST_RESERVE", "10")))
+
+# 安全装置: 5xx 応答・エラー画面への遷移などの失敗が、取得が進まないまま連続でこの回数に達したら
+# 実行全体を中止する（取得済み分は返す）。再試行の前には BUNKYO_RETRY_WAIT_SEC 秒（30秒以上）待つ。
+BUNKYO_MAX_CONSECUTIVE_ERRORS = max(1, int(os.environ.get("BUNKYO_MAX_CONSECUTIVE_ERRORS", "3")))
+BUNKYO_RETRY_WAIT_SEC = max(30.0, float(os.environ.get("BUNKYO_RETRY_WAIT_SEC", "30")))
+
+# 試験用の絞り込み（本番は未設定＝制限なし）。施設数（許可リストに合った施設のコード順の先頭から）と、
+# 表示期間の数（BUNKYO_MAX_PERIODS=1 なら今日から2週間分だけ）。
+BUNKYO_MAX_FACILITIES = int(os.environ.get("BUNKYO_MAX_FACILITIES", "0") or 0)
+BUNKYO_MAX_PERIODS = int(os.environ.get("BUNKYO_MAX_PERIODS", "0") or 0)
+
+# ── ローカル実行専用（GitHub Actions 上では無視する） ──────────────────────────
+# Playwright が想定する版のブラウザを `playwright install` できない環境で、手元にあるブラウザを使うときの実行ファイル。
+LOCAL_CHROMIUM_EXECUTABLE = os.environ.get("LOCAL_CHROMIUM_EXECUTABLE", "")

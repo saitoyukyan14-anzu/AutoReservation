@@ -42,8 +42,8 @@ jobs:
         #   ward:   区キー（scraper/scrapers/<区>.py のクラスの `key`）
         #   shards: その区の分割数（supports_shard=False のスクレイパーは必ず 1）
         #   shard:  0 〜 shards-1 を「すべて」1行ずつ並べる（欠けた shard の施設は前回データで補われ、更新されない）
-        # 例) 文京区を分割なしで追加する場合:
-        #   - { ward: bunkyo, shards: 1, shard: 0 }
+        # 例) 港区を分割なしで追加する場合:
+        #   - { ward: minato, shards: 1, shard: 0 }
         # 例) 新宿区を2分割で追加する場合:
         #   - { ward: shinjuku, shards: 2, shard: 0 }
         #   - { ward: shinjuku, shards: 2, shard: 1 }
@@ -56,6 +56,10 @@ jobs:
           - { ward: setagaya, shards: 5, shard: 4 }
           # 新宿区（分割なし。HTTP クライアント方式・1セッションで順番に取得。所要 約25分）
           - { ward: shinjuku, shards: 1, shard: 0 }
+          # 文京区（分割なし）。robots.txt が Disallow: /* のため、ユーザー承認の控えめな条件で運用する:
+          # 並列1本（shards は必ず 1。スクレイパーも分割に対応させていない）・操作ごとに3秒以上待機・
+          # 1セッション3施設×2週間表示まで。所要は約40〜45分の見込み（実測から。リクエスト数の上限については README 参照）。
+          - { ward: bunkyo, shards: 1, shard: 0 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

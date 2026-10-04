@@ -15,6 +15,9 @@
   GitHub Actions のジョブ上限で強制終了されると結果が全損するため、期限を過ぎたら
   それまでの取得分を返して終わる。長いループ（施設・期間・ページ等）の区切りで
   `self.out_of_time("どこで")` を確認し、True なら打ち切って取得済みの分を返すこと。
+  時間以外の理由（リクエスト数の上限・相手サイトのエラーの連続など）で打ち切るときは
+  `self.stop_early("理由")` を呼ぶ。part には時間切れと同じく `timed_out=True` として記録され
+  （理由は `stop_reason`）、以後 `out_of_time()` も True を返す。
 
 - **取得範囲の記録**（`set_assigned_facilities()` / `mark_completed_until()`）
   `main.py` は part ファイルに「この shard の担当施設名一覧」と「全担当施設について取得を
@@ -77,8 +80,10 @@ class WardScraper(ABC):
         self.shard_count = shard_count
         #: 取得の期限（time.monotonic() 基準の秒）。None なら無制限。
         self.deadline = deadline
-        #: 期限超過で打ち切ったか（main.py が part ファイルに記録する）
+        #: 期限超過（または stop_early()）で打ち切ったか（main.py が part ファイルに記録する）
         self.timed_out = False
+        #: 打ち切りの理由（ログ・part 用）。None は「時間切れ」または打ち切りなし。
+        self.stop_reason: str | None = None
         #: この shard の担当施設名（正規化後・Slot.facility と同じ表記）。None は「不明（未記録）」。
         self.assigned_facilities: list[str] | None = None
         #: 全担当施設について取得を完了した最終日。None は「1日も完了していない（未記録）」。
@@ -114,6 +119,18 @@ class WardScraper(ABC):
         at = f"（{where}）" if where else ""
         print(f"[{self.key or self.ward_name}] 時間切れで打ち切り{at}。ここまでの取得分を返します。")
         return True
+
+    def stop_early(self, reason: str) -> None:
+        """時間切れ以外の理由で取得を打ち切る（最初の1回だけ記録・ログ出力）。
+
+        時間切れと同じ扱い（`timed_out=True`）で part に記録されるので、combine は
+        `completed_until` より後の日付を前回データから補う。呼んだ後は `out_of_time()` が True を返す。
+        """
+        if self.timed_out:
+            return
+        self.timed_out = True
+        self.stop_reason = reason
+        print(f"[{self.key or self.ward_name}] {reason}のため打ち切り。ここまでの取得分を返します。")
 
     # --- 取得範囲の記録（combine での補完に使う） ------------------------------
 

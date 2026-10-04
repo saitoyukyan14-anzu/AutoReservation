@@ -12,7 +12,8 @@
 
 part ファイル名は `availability.part.<区キー>.<shard番号>.json`。主なフィールド:
   slots            取得した枠
-  timed_out        時間切れで打ち切ったか
+  timed_out        時間切れ（またはリクエスト上限・エラーの連続など）で打ち切ったか
+  stop_reason      時間切れ以外で打ち切った場合の理由（ログ用）。null は時間切れ／打ち切りなし
   facilities       この shard の担当施設名一覧（正規化後）。null は「不明」
   completed_until  全担当施設について取得を完了した最終日。null は「完了した日なし」
 facilities キーが無い part は旧形式として扱う（combine での補完なし＝従来どおり）。
@@ -145,10 +146,12 @@ def run_scrape(
         if completed_until is None and not scraper.timed_out:
             # 記録しないスクレイパーでも、最後まで取得できたなら期間の最終日まで完了している
             completed_until = date_to
+        stop_reason = getattr(scraper, "stop_reason", None)
         if scraper.timed_out:
             where = f"の shard {label} " if shard_count > 1 else ""
             done = f"{completed_until} まで取得完了" if completed_until else "取得を完了した日なし"
-            _warn("main", f"{scraper.ward_name}（{scraper.key}）{where}は時間切れで打ち切りました（{len(slots)} 件は取得済み・{done}）。")
+            why = stop_reason or "時間切れ"
+            _warn("main", f"{scraper.ward_name}（{scraper.key}）{where}は{why}で打ち切りました（{len(slots)} 件は取得済み・{done}）。")
         if facilities is None and not (scraper.timed_out and not slots):
             print(f"[main]   ※ {scraper.ward_name} は担当施設を記録していません（combine で欠けた shard・時間切れ分の補完ができません）。")
         _dump(out, {
@@ -160,6 +163,7 @@ def run_scrape(
             "shard_index": shard_index,
             "shard_count": shard_count,
             "timed_out": scraper.timed_out,
+            "stop_reason": stop_reason if scraper.timed_out else None,
             "facilities": facilities,
             "completed_until": completed_until.isoformat() if completed_until else None,
             "slots": [s.to_dict() for s in slots],
@@ -343,8 +347,9 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
         for i, d, kind in kinds:
             if not d.get("timed_out") or kind == "noinfo":
                 continue
+            why = d.get("stop_reason") or "時間切れ"
             if kind != "known":
-                _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られています（期間の後半が欠けている可能性があります）。担当施設がわからない part（旧形式など）のため補完できません。")
+                _warn("combine", f"{tag}: shard {i} は{why}で打ち切られています（期間の後半が欠けている可能性があります）。担当施設がわからない part（旧形式など）のため補完できません。")
                 continue
             facs = coverage[i]
             until = _completed_until(d, f"{tag} shard {i}")
@@ -364,7 +369,7 @@ def run_combine(part_paths: list[Path] | None = None) -> int:
                 after = (dt.date.fromisoformat(until) + dt.timedelta(days=1)).isoformat()
                 what = f"{until} まで取得完了。担当 {len(facs)} 施設の {after} 以降"
             detail = f": {_names(filled)}" if filled else ""
-            _warn("combine", f"{tag}: shard {i} は時間切れで打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。今回取得できた日は補っていません）{detail}")
+            _warn("combine", f"{tag}: shard {i} は{why}で打ち切られました（{what}の枠 {n} 件を既存の {src}（前回データ）から補いました。今回取得できた日は補っていません）{detail}")
 
     payload = {
         "updated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
