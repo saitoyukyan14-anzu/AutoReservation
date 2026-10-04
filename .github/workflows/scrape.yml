@@ -65,7 +65,10 @@ jobs:
         working-directory: scraper
         run: |
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+      - name: Install browser (Playwright を使う区のみ)
+        # 新宿区は HTTP クライアントで取得するためブラウザ不要
+        if: ${{ matrix.ward != 'shinjuku' }}
+        run: python -m playwright install --with-deps chromium
       - name: Run scraper (${{ matrix.ward }} shard ${{ matrix.shard }}/${{ matrix.shards }})
         env:
           MONTHS: ${{ github.event.inputs.months || '2' }}
