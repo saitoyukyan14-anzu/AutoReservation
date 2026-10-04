@@ -54,6 +54,8 @@ jobs:
           - { ward: setagaya, shards: 5, shard: 2 }
           - { ward: setagaya, shards: 5, shard: 3 }
           - { ward: setagaya, shards: 5, shard: 4 }
+          # 新宿区（分割なし。HTTP クライアント方式・1セッションで順番に取得。所要 約25分）
+          - { ward: shinjuku, shards: 1, shard: 0 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

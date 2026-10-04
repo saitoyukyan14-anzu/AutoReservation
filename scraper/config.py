@@ -39,3 +39,30 @@ HEADLESS = os.environ.get("HEADFUL", "") != "1"
 
 # 相手サーバーへの配慮：各リクエスト後の待機秒数（高速化のため控えめ）
 REQUEST_DELAY_SEC = float(os.environ.get("REQUEST_DELAY_SEC", "0.3"))
+
+# ── 新宿区：新宿区立地域センター受付システム（https://www.shinjuku.eprs.jp/chiiki/web/）──
+# 「何をする」（#purpose の value）。40_20 = ダンス（軽スポーツ）
+SHINJUKU_PURPOSE = os.environ.get("SHINJUKU_PURPOSE", "40_20")
+# 「どこで」。1000_0 = 新宿区立地域センター(すべて)
+SHINJUKU_AREA = os.environ.get("SHINJUKU_AREA", "1000_0")
+# 除外する部屋（施設コード、カンマ区切り）。既定は除外なし（検索結果の全部屋＝葬儀兼用ホールも含む）。
+#   葬儀兼用ホール: 10100090 菊, 10100100 百合（牛込箪笥）, 10200100 地下ホールＡ（榎町）,
+#                   10300090 Ｂ１ホール（若松）, 10500110 集会室１（戸塚）
+SHINJUKU_EXCLUDE_ROOMS = [c.strip() for c in os.environ.get("SHINJUKU_EXCLUDE_ROOMS", "").split(",") if c.strip()]
+# 想定している部屋数（検索結果がこれと違えば警告ログを出す）
+SHINJUKU_EXPECTED_ROOMS = int(os.environ.get("SHINJUKU_EXPECTED_ROOMS", "25"))
+# リクエスト間の待機秒数（全リクエスト共通。3 未満を指定しても 3 秒にする）
+SHINJUKU_REQUEST_DELAY_SEC = float(os.environ.get("SHINJUKU_REQUEST_DELAY_SEC", "3.0"))
+# 1回の実行で対象ホストに送る総リクエスト数の上限（超えたら打ち切り、取得済み分を返す）。
+# 見積もり: トップ＋検索 2 件 ＋ 25室 × 最大14週 ≒ 330〜352 件
+SHINJUKU_MAX_REQUESTS = int(os.environ.get("SHINJUKU_MAX_REQUESTS", "450"))
+# User-Agent（ブラウザを偽装せず、正直に名乗る）
+SHINJUKU_USER_AGENT = os.environ.get(
+    "SHINJUKU_USER_AGENT",
+    "AkiShisetsuKensaku/1.0 (+https://github.com/saitoyukyan14-anzu/AutoReservation)",
+)
+# 試験用の絞り込み: 取得する部屋（施設コード、カンマ区切り。空なら全部屋）と週数の上限（0 で無制限）
+SHINJUKU_ONLY_ROOMS = [c.strip() for c in os.environ.get("SHINJUKU_ONLY_ROOMS", "").split(",") if c.strip()]
+SHINJUKU_MAX_WEEKS = int(os.environ.get("SHINJUKU_MAX_WEEKS", "0"))
+# 全リクエストの記録先（TSV。空なら記録しない）。試験・調査用
+SHINJUKU_REQUEST_LOG = os.environ.get("SHINJUKU_REQUEST_LOG", "")
