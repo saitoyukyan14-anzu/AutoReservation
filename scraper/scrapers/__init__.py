@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from scrapers.base import WardScraper
+from scrapers.bunkyo import BunkyoScraper
 from scrapers.setagaya import SetagayaScraper
 from scrapers.shinjuku import ShinjukuScraper
 
@@ -14,6 +15,7 @@ from scrapers.shinjuku import ShinjukuScraper
 ALL_SCRAPERS: list[type[WardScraper]] = [
     SetagayaScraper,
     ShinjukuScraper,
+    BunkyoScraper,
     # 今後ここに追加:
-    # BunkyoScraper, ...
+    # MinatoScraper, ...
 ]

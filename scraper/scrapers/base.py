@@ -15,6 +15,9 @@
   GitHub Actions のジョブ上限で強制終了されると結果が全損するため、期限を過ぎたら
   それまでの取得分を返して終わる。長いループ（施設・期間・ページ等）の区切りで
   `self.out_of_time("どこで")` を確認し、True なら打ち切って取得済みの分を返すこと。
+  時間以外の理由（リクエスト数の上限・相手サイトのエラーの連続など）で打ち切るときは
+  `self.stop_early("理由")` を呼ぶ。part には時間切れと同じく `timed_out=True` として記録され
+  （理由は `stop_reason`）、以後 `out_of_time()` も True を返す。
 
 - **取得範囲の記録**（`set_assigned_facilities()` / `mark_completed_until()`）
   `main.py` は part ファイルに「この shard の担当施設名一覧」と「全担当施設について取得を
@@ -27,6 +30,13 @@
   - 呼ばなかった場合: 担当施設は「不明」（None）として記録され、combine はその part について
     従来どおりの扱い（補完なし）になる。completed_until は、時間切れでなければ取得期間の
     最終日、時間切れなら「完了日なし」（None）として記録される。
+  - 施設ごとに取得の進み具合が違うスクレイパー（施設のグループを順に取る等）は、
+    `self.mark_facility_completed_until(施設名, 日付)` で施設ごとの完了日も記録できる。part の
+    `facility_completed_until` になり、combine の打ち切り補完は施設単位で行われる（最後まで取れた
+    施設には前回データを補わない）。担当施設のうち記録の無い施設は completed_until で扱う。
+  - 設計上「今回は取得しない」施設（輪番で取得する場合の、今回の番ではない施設）は
+    `self.set_carry_over_facilities(施設名一覧)` で記録する。part の `carry_over_facilities` になり、
+    combine はそれらの施設の前回データをそのまま引き継ぐ（警告は出さない）。
 
 サブクラスで `__init__` を定義する場合は、必ず `shard_index` / `shard_count` / `deadline`
 を受け取り `super().__init__(...)` に渡すこと。
@@ -77,12 +87,18 @@ class WardScraper(ABC):
         self.shard_count = shard_count
         #: 取得の期限（time.monotonic() 基準の秒）。None なら無制限。
         self.deadline = deadline
-        #: 期限超過で打ち切ったか（main.py が part ファイルに記録する）
+        #: 期限超過（または stop_early()）で打ち切ったか（main.py が part ファイルに記録する）
         self.timed_out = False
+        #: 打ち切りの理由（ログ・part 用）。None は「時間切れ」または打ち切りなし。
+        self.stop_reason: str | None = None
         #: この shard の担当施設名（正規化後・Slot.facility と同じ表記）。None は「不明（未記録）」。
         self.assigned_facilities: list[str] | None = None
         #: 全担当施設について取得を完了した最終日。None は「1日も完了していない（未記録）」。
         self.completed_until: dt.date | None = None
+        #: 施設ごとの完了日（施設名 → 日付。None はその施設で完了した日なし）。None は「未記録」。
+        self.facility_completed_until: dict[str, dt.date | None] | None = None
+        #: 設計上今回は取得しない施設（前回データを引き継ぐ）。None は「未記録」。
+        self.carry_over_facilities: list[str] | None = None
 
     # --- shard 分割 ---------------------------------------------------------
 
@@ -115,6 +131,18 @@ class WardScraper(ABC):
         print(f"[{self.key or self.ward_name}] 時間切れで打ち切り{at}。ここまでの取得分を返します。")
         return True
 
+    def stop_early(self, reason: str) -> None:
+        """時間切れ以外の理由で取得を打ち切る（最初の1回だけ記録・ログ出力）。
+
+        時間切れと同じ扱い（`timed_out=True`）で part に記録されるので、combine は
+        `completed_until` より後の日付を前回データから補う。呼んだ後は `out_of_time()` が True を返す。
+        """
+        if self.timed_out:
+            return
+        self.timed_out = True
+        self.stop_reason = reason
+        print(f"[{self.key or self.ward_name}] {reason}のため打ち切り。ここまでの取得分を返します。")
+
     # --- 取得範囲の記録（combine での補完に使う） ------------------------------
 
     def set_assigned_facilities(self, names: Iterable[str]) -> None:
@@ -128,6 +156,23 @@ class WardScraper(ABC):
         """全担当施設について date まで取得を完了したことを記録する（後退はしない）。"""
         if self.completed_until is None or date > self.completed_until:
             self.completed_until = date
+
+    def mark_facility_completed_until(self, name: str, date: dt.date | None) -> None:
+        """施設 name について date まで取得を完了したことを記録する（後退はしない）。
+
+        date=None は「まだ完了した日なし」として施設を登録するだけ（既に日付があれば変えない）。
+        """
+        if self.facility_completed_until is None:
+            self.facility_completed_until = {}
+        current = self.facility_completed_until.get(name)
+        if date is not None and (current is None or date > current):
+            self.facility_completed_until[name] = date
+        else:
+            self.facility_completed_until.setdefault(name, None)
+
+    def set_carry_over_facilities(self, names: Iterable[str]) -> None:
+        """設計上今回は取得しない施設（combine が前回データをそのまま引き継ぐ）を記録する。"""
+        self.carry_over_facilities = sorted({n for n in names if n})
 
     # --- 取得本体 -----------------------------------------------------------
 
