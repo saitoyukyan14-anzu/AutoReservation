@@ -14,12 +14,11 @@ export interface AvailabilityData {
   slots: Slot[];
 }
 
+/** 施設データベースの1行（1行=1施設）。空き状況とは ward + facility で突合する。 */
 export interface Facility {
   ward: string;
   facility: string;
-  room: string;
-  area_sqm: number | null;
-  capacity: number | null;
+  url: string | null;
   note: string;
 }
 
@@ -27,18 +26,26 @@ export interface FacilitiesData {
   facilities: Facility[];
 }
 
-/** 空き時間に広さ情報を結合した、表示用の1行。 */
+export interface TimeRange {
+  start: string; // H:MM
+  end: string; // H:MM
+}
+
+/**
+ * 表示用の1行。同じ区・日付・施設・部屋で連続する枠を1つに統合し、施設情報を結合したもの。
+ * start / end は統合後の範囲、parts は統合元の枠（統合されていなければ1要素）。
+ */
 export interface EnrichedSlot extends Slot {
-  area_sqm: number | null;
-  capacity: number | null;
+  parts: TimeRange[];
+  url: string | null;
   note: string;
 }
 
-/** 希望する1件の候補（日付・時間帯・広さ）。複数入力してOR検索する。 */
+/** 希望する1件の候補（日付・時間帯・区）。複数入力してOR検索する。 */
 export interface Candidate {
   id: string;
   date: string; // YYYY-MM-DD（単一日付）
   timeFrom: string; // "HH:MM" / ""
   timeTo: string; // "HH:MM" / ""
-  minArea: string; // 数値文字列（㎡以上）/ ""
+  wards: string[]; // 空配列 = 全区
 }

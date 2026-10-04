@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import CandidateEditor from "./components/CandidateEditor";
 import Results from "./components/Results";
-import { loadAll, matchCandidate } from "./lib/data";
+import { listWards, loadAll, matchCandidate } from "./lib/data";
 import type { Candidate, EnrichedSlot } from "./types";
 
 function newId(): string {
@@ -17,7 +17,7 @@ function todayISO(): string {
 }
 
 function emptyCandidate(): Candidate {
-  return { id: newId(), date: todayISO(), timeFrom: "", timeTo: "", minArea: "" };
+  return { id: newId(), date: todayISO(), timeFrom: "", timeTo: "", wards: [] };
 }
 
 export default function App() {
@@ -41,6 +41,8 @@ export default function App() {
   const add = () => setCandidates((cs) => [...cs, emptyCandidate()]);
   const remove = (id: string) =>
     setCandidates((cs) => (cs.length > 1 ? cs.filter((c) => c.id !== id) : cs));
+
+  const wardOptions = useMemo(() => listWards(slots), [slots]);
 
   const results = useMemo(
     () => candidates.map((c) => ({ candidate: c, matches: matchCandidate(slots, c) })),
@@ -68,7 +70,7 @@ export default function App() {
                 けやき空き
               </h1>
               <p className="mt-0.5 text-sm text-muted">
-                希望の日時・広さを並べて、世田谷区の集会施設の空きをまとめて探す
+                希望の日時・区を並べて、東京都の集会施設の空きをまとめて探す
               </p>
             </div>
           </div>
@@ -97,6 +99,7 @@ export default function App() {
           <div className="grid gap-8 lg:grid-cols-[320px_1fr]">
             <CandidateEditor
               candidates={candidates}
+              wardOptions={wardOptions}
               onUpdate={update}
               onAdd={add}
               onRemove={remove}
@@ -117,18 +120,20 @@ export default function App() {
       <footer className="border-t border-line">
         <div className="mx-auto max-w-6xl px-5 py-6 text-xs leading-relaxed text-muted">
           <p>
-            空き状況は{" "}
+            空き状況は各区の公共施設予約システム（世田谷区は{" "}
             <a
               href="https://setagaya.keyakinet.net/Web/"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="font-medium text-shu underline-offset-2 hover:underline"
             >
               けやきネット
-            </a>{" "}
-            から定期取得した参考情報です。実際の予約・最新状況は必ず公式サイトでご確認ください。
+            </a>
+            ）から定期取得した参考情報です。実際の予約・最新状況は必ず公式サイトでご確認ください。
           </p>
-          <p className="mt-1">広さ・定員は施設データベース（手動管理）に基づきます。</p>
+          <p className="mt-1">
+            前後の間隔が30分以内の枠は1行にまとめて表示しています（予約は元の枠ごとに必要です）。施設名のリンク先は施設データベース（手動管理）に基づきます。
+          </p>
         </div>
       </footer>
     </div>
