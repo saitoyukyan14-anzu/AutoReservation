@@ -83,6 +83,16 @@
     {"ward": "文京区", "facility": "不忍通りふれあい館", "url": "https://www.city.bunkyo.lg.jp/b011/p006686/index.html", "note": ""},
     {"ward": "文京区", "facility": "シルバーセンター", "url": "https://www.city.bunkyo.lg.jp/b017/p003266.html", "note": "平日昼間のみ。高齢者団体が優先で、一般は使用日の1か月前の1日から申込可"},
     {"ward": "文京区", "facility": "男女平等センター", "url": "https://www.city.bunkyo.lg.jp/b005/p006250.html", "note": "一般団体は利用月の1か月前の1日から申込可。研修室は防音室ではないため音量に配慮が必要"},
-    {"ward": "文京区", "facility": "福祉センター江戸川橋", "url": "https://www.city.bunkyo.lg.jp/b017/p003269/index.html", "note": "一般団体は利用月の1か月前の1日から申込可。学習室・トレーニングルームは夜間のみ"}
+    {"ward": "文京区", "facility": "福祉センター江戸川橋", "url": "https://www.city.bunkyo.lg.jp/b017/p003269/index.html", "note": "一般団体は利用月の1か月前の1日から申込可。学習室・トレーニングルームは夜間のみ"},
+    {"ward": "新宿区", "facility": "四谷地域センター", "url": "https://ycc.tokyo/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"},
+    {"ward": "新宿区", "facility": "牛込箪笥地域センター", "url": "https://www.ushigometansu.com/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります。葬儀利用が優先されるホールあり"},
+    {"ward": "新宿区", "facility": "榎町地域センター", "url": "https://enoki-chiiki.tokyo/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります。葬儀利用が優先されるホールあり"},
+    {"ward": "新宿区", "facility": "若松地域センター", "url": "https://wakamatsucenter.com/index", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります。葬儀利用が優先されるホールあり"},
+    {"ward": "新宿区", "facility": "大久保地域センター", "url": "https://ookubocc.tokyo/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"},
+    {"ward": "新宿区", "facility": "戸塚地域センター", "url": "https://www.tcc-tokyo.net/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります。葬儀利用が優先されるホールあり"},
+    {"ward": "新宿区", "facility": "落合第一地域センター", "url": "https://www.ochiai1center.com/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"},
+    {"ward": "新宿区", "facility": "落合第二地域センター", "url": "https://www.ochiai2center.com/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"},
+    {"ward": "新宿区", "facility": "柏木地域センター", "url": "https://www.kashiwagicc.com/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"},
+    {"ward": "新宿区", "facility": "角筈地域センター", "url": "https://tsunohazucc.com/", "note": "「空き」には登録団体のみ申込可の時期や抽選期間中の枠が含まれる場合があります"}
   ]
 }
