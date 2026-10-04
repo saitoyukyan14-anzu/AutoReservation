@@ -67,7 +67,7 @@ export default function App() {
             <div className="h-12 w-1.5 rounded-full bg-shu" />
             <div>
               <h1 className="font-display text-3xl font-bold tracking-wide text-ink">
-                けやき空き
+                空き施設検索
               </h1>
               <p className="mt-0.5 text-sm text-muted">
                 希望の日時・区を並べて、東京都の集会施設の空きをまとめて探す
