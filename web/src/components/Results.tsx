@@ -29,7 +29,7 @@ export default function Results({ results }: Props) {
               <SlotTable slots={matches} showDate={showDate} />
             ) : (
               <p className="rounded-xl border border-dashed border-line bg-card/50 px-5 py-8 text-center text-sm text-muted">
-                この条件に合う空きは見つかりませんでした。時間帯や広さをゆるめてみてください。
+                この条件に合う空きは見つかりませんでした。時間帯や区の条件をゆるめてみてください。
               </p>
             )}
           </section>
